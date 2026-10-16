@@ -498,7 +498,10 @@ async function handleResponses(req: IncomingMessage, res: ServerResponse): Promi
     model = parsed.model;
     stream = parsed.stream ? 1 : 0;
     const resumeId = parsed.conversation_id;
-    if (!parsed.conversation_id) parsed.conversation_id = requestId;
+    if (!parsed.conversation_id) {
+      parsed.conversation_id = requestId;
+      parsed.conversation_id_generated = true;
+    }
     validateChatTurnRequest(parsed);
     if (config.logDetailed) {
       requestDetail = truncateUtf8(buildRequestDetail(parsed), config.logDetailedMaxBytes);

@@ -174,6 +174,8 @@ export interface ParsedChatRequest {
   customToolNames?: string[];
   tool_choice?: "auto" | "none" | { name: string };
   conversation_id?: string;
+  /** True when the gateway assigned `conversation_id` itself because the client sent none. */
+  conversation_id_generated?: boolean;
 }
 
 export interface OpenAiModel {

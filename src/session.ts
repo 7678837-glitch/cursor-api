@@ -192,12 +192,15 @@ export function resolveTurnAction(input: {
 
 export function resolveParkedRoute(input: {
   conversationId?: string;
+  /** The id was assigned by the gateway, so a client resending full history can still match by stem. */
+  conversationIdGenerated?: boolean;
   hasConversationParks: boolean;
   hasStemParks: boolean;
 }): "conversation" | "stem" | undefined {
-  if (input.conversationId) {
+  if (input.conversationId && !input.conversationIdGenerated) {
     return input.hasConversationParks ? "conversation" : undefined;
   }
+  if (input.conversationId && input.hasConversationParks) return "conversation";
   return input.hasStemParks ? "stem" : undefined;
 }
 
@@ -291,6 +294,7 @@ async function runClaimedChatTurn(
   const byConv = convKey ? sessions.get(convKey) : undefined;
   const parkedRoute = resolveParkedRoute({
     conversationId,
+    conversationIdGenerated: options.request.conversation_id_generated,
     hasConversationParks: Boolean(byConv && byConv.parks.size > 0),
     hasStemParks: Boolean(byStem && byStem.parks.size > 0),
   });

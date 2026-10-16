@@ -854,6 +854,15 @@ test("parked-session routing honors explicit IDs and image identity", async () =
     resolveParkedRoute({ hasConversationParks: false, hasStemParks: true }),
     "stem",
   );
+  // Gateway-assigned IDs (Responses without previous_response_id) still match by history.
+  assert.equal(
+    resolveParkedRoute({ conversationId: "resp_1", conversationIdGenerated: true, hasConversationParks: false, hasStemParks: true }),
+    "stem",
+  );
+  assert.equal(
+    resolveParkedRoute({ conversationId: "resp_1", conversationIdGenerated: true, hasConversationParks: false, hasStemParks: false }),
+    undefined,
+  );
 
   const first = [
     {
