@@ -162,7 +162,7 @@ The Cursor SDK accepts each turn as one prompt rather than native OpenAI role me
 
 Point Codex at this gateway's `/v1`. Compaction (`/compact`) works: Responses accepts `parallel_tool_calls: false` and `tools: []` (the flag is ignored; Cursor does not distinguish it). Chat Completions still 400s `parallel_tool_calls: false`.
 
-Also accepted on Responses and ignored: sampling knobs (`temperature`, `top_p`, …) and unknown top-level fields (`client_metadata`, `include`, …). Codex `custom` tools (`apply_patch`) round-trip as `custom_tool_call` with freeform `input`. Nested `namespace` tools flatten to functions. Unnamed hosted tools (`web_search`, …) are dropped. Replayed assistant text next to `function_call` items is merged so the following tool-result round stays valid. `previous_response_id` resumes the same Cursor agent.
+Also accepted on Responses and ignored: sampling knobs (`temperature`, `top_p`, …) and unknown top-level fields (`client_metadata`, `include`, …). Codex `custom` tools (`apply_patch`) round-trip as `custom_tool_call` with freeform `input`. Nested `namespace` tools flatten to functions. Unnamed hosted tools (`web_search`, …) are dropped. Replayed assistant text next to `function_call` items is merged so the following tool-result round stays valid. `previous_response_id` resumes the same Cursor agent. `reasoning.effort` is best-effort: it maps to the model's effort parameter when the model has one (exact value, else the nearest level, e.g. `xhigh` → `high`, `minimal` → `low`) and is ignored for models without one, so Codex defaults never 400. A top-level `reasoning_effort` stays strict like on Chat Completions.
 
 ### OpenCode
 
