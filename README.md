@@ -98,6 +98,7 @@ detailed = false
 | `[logs].detailed_max_bytes` | Per-field cap for request/response JSON (4KiB–1MiB, default 64KiB) |
 | `[logs].max_detail_bytes` | Cap total UTF-8 bytes of `model` + detail columns (default 256MiB); oldest rows dropped first |
 | `park_timeout_ms` | How long a pending tool round stays in memory (default **300000**). After a restart, the next tool-result request continues from the HTTP transcript |
+| `ignore_sampling_params` | Chat Completions: drop `temperature`, `top_p`, `top_k`, `presence_penalty`, `frequency_penalty`, `seed` and accept `parallel_tool_calls: false` instead of returning 400 (default **false**). Cursor ignores these anyway; enable it for clients that always send them. `stop`, `logit_bias`, `n > 1` stay rejected |
 
 ```bash
 chmod 600 data/config/gateway.toml
@@ -154,7 +155,7 @@ curl -s http://127.0.0.1:8787/v1/chat/completions \
 | `POST` | `/v1/responses` | Codex, OpenCode `"npm": "@ai-sdk/openai"` |
 | `GET` | `/v1/models`, `/v1/models/{id}` | Model list |
 
-Streaming (`stream: true`), vision (`image_url`, plus OpenCode `image` / image `file` parts), thinking (`delta.reasoning_content`), and Cursor knobs (`params`, `variant`, `reasoning_effort`, …) are supported. `variant` matches a unique catalog display name, or an effort/reasoning/fast value when Cursor repeats the same display name (OpenCode `--variant high` does not send this field on `@ai-sdk/openai-compatible`; send `variant` or `reasoning_effort` on the body). OpenAI tool calling (`tools` / `tool_calls` / `role: tool`) is supported so clients like OpenCode can run tools locally. Cursor shell/file tools stay off; MCP is enabled only to surface those client tools. Audio is not. `temperature` / `top_p` / `seed` 400; `max_tokens` is accepted. `conversation_id` (or `metadata.conversation_id`) resumes the same Cursor agent for that client key; IDs are limited to 512 UTF-8 bytes and the newest 1,000 mappings per client key are retained. Tool parks time out after `park_timeout_ms` (default 300000); after a gateway restart, tool results continue from the HTTP transcript.
+Streaming (`stream: true`), vision (`image_url`, plus OpenCode `image` / image `file` parts), thinking (`delta.reasoning_content`), and Cursor knobs (`params`, `variant`, `reasoning_effort`, …) are supported. `variant` matches a unique catalog display name, or an effort/reasoning/fast value when Cursor repeats the same display name (OpenCode `--variant high` does not send this field on `@ai-sdk/openai-compatible`; send `variant` or `reasoning_effort` on the body). OpenAI tool calling (`tools` / `tool_calls` / `role: tool`) is supported so clients like OpenCode can run tools locally. Cursor shell/file tools stay off; MCP is enabled only to surface those client tools. Audio is not. `temperature` / `top_p` / `seed` 400 unless `ignore_sampling_params = true`; `max_tokens` is accepted. `conversation_id` (or `metadata.conversation_id`) resumes the same Cursor agent for that client key; IDs are limited to 512 UTF-8 bytes and the newest 1,000 mappings per client key are retained. Tool parks time out after `park_timeout_ms` (default 300000); after a gateway restart, tool results continue from the HTTP transcript.
 
 The Cursor SDK accepts each turn as one prompt rather than native OpenAI role messages. This gateway serializes `system` / `developer` / `user` roles into transcript text, so application-supplied `system` or `developer` messages are context, not a hard security boundary against hostile user content.
 
@@ -183,7 +184,7 @@ Also accepted on Responses and ignored: sampling knobs (`temperature`, `top_p`, 
 
 Streaming (`stream: true`), vision (`image_url`, plus OpenCode `image` / image `file` parts), thinking (`delta.reasoning_content`), Cursor knobs (`params`, `variant`, `reasoning_effort`, …), and OpenAI tool calling (`tools` / `tool_calls` / `role: tool`) are supported so local clients can run tools. Cursor shell/file tools stay off; MCP is enabled only to surface those client tools.
 
-Audio is not supported. `temperature` / `top_p` / `seed` 400; `max_tokens` is accepted. `conversation_id` (or `metadata.conversation_id`) resumes the same Cursor agent for that client key. Tool parks time out after `park_timeout_ms` (default 300000); after a gateway restart, tool results continue from the HTTP transcript.
+Audio is not supported. `temperature` / `top_p` / `seed` 400 unless `ignore_sampling_params = true`; `max_tokens` is accepted. `conversation_id` (or `metadata.conversation_id`) resumes the same Cursor agent for that client key. Tool parks time out after `park_timeout_ms` (default 300000); after a gateway restart, tool results continue from the HTTP transcript.
 
 ```python
 from openai import OpenAI

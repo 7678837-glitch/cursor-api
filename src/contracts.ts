@@ -20,6 +20,8 @@ export interface AppConfig {
   logDetailedMaxBytes: number;
   logMaxDetailBytes: number;
   parkTimeoutMs: number;
+  /** Chat Completions drops unsupported sampling knobs instead of rejecting them. */
+  ignoreSamplingParams: boolean;
 }
 
 export interface LogPolicy {

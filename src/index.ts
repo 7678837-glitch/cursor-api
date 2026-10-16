@@ -223,7 +223,9 @@ async function handleChat(req: IncomingMessage, res: ServerResponse): Promise<vo
     const body = await readJsonBody(req, config.maxBodyBytes);
     model = peekModel(body);
     requestDetail = snapshotIncomingBody(body);
-    const parsed = parseChatCompletionsRequest(body);
+    const parsed = parseChatCompletionsRequest(body, {
+      ignoreSamplingParams: config.ignoreSamplingParams,
+    });
     model = parsed.model;
     stream = parsed.stream ? 1 : 0;
     validateChatTurnRequest(parsed);

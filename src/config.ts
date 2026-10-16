@@ -24,6 +24,8 @@ admin_access_key = ""
 api_key_pepper = ""
 
 # park_timeout_ms = 300000
+# Drop temperature/top_p/seed/... on Chat Completions instead of returning 400:
+# ignore_sampling_params = false
 
 [logs]
 retention_days = 7
@@ -129,6 +131,15 @@ export function loadConfig(
       ),
       DEFAULT_LOG_MAX_DETAIL_BYTES,
       { min: 1_048_576, max: 10_737_418_240 },
+    ),
+    ignoreSamplingParams: parseBoolean(
+      pickConfigured(
+        env,
+        "IGNORE_SAMPLING_PARAMS",
+        boolToString(tomlBool(toml, "ignore_sampling_params")),
+        "ignore_sampling_params",
+      ),
+      false,
     ),
     parkTimeoutMs: parseBoundedInt(
       pickConfigured(
