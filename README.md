@@ -241,6 +241,8 @@ GIT_COMMIT=$(git rev-parse HEAD) docker compose build
 | `GET /health` | Liveness: `status`, `version`, `git_commit`, `schema_version` |
 | `GET /` | JSON API map (`curl`) or redirect to admin (browser) |
 
+The image ships a Docker `HEALTHCHECK` that probes `/health` on `GATEWAY_PORT` (default 8787), so `docker ps` shows `healthy` / `unhealthy`. If you change `port` only in `gateway.toml`, also set `GATEWAY_PORT` in the container environment.
+
 `version` comes from [`VERSION`](./VERSION). After a GHCR tag, pull/restart the container and compare `/health` before assuming the new build is running.
 
 ---

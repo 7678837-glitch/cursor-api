@@ -241,6 +241,8 @@ GIT_COMMIT=$(git rev-parse HEAD) docker compose build
 | `GET /health` | 存活：`status`、`version`、`git_commit`、`schema_version` |
 | `GET /` | JSON 接口说明（curl）或跳转管理台（浏览器） |
 
+镜像自带 Docker `HEALTHCHECK`，探测 `GATEWAY_PORT`（默认 8787）上的 `/health`，`docker ps` 会显示 `healthy` / `unhealthy`。如果只在 `gateway.toml` 里改了 `port`，请同时在容器环境里设置 `GATEWAY_PORT`。
+
 `version` 来自 [`VERSION`](./VERSION)。GHCR 打 tag 之后，先 pull/重启容器，再对 `/health`，不要假设新构建已经在跑。
 
 ---
