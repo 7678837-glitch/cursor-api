@@ -36,6 +36,21 @@ export class ConfigurationError extends CursorAgentError {
 
 const CATALOG = [
   { id: "fake-model", displayName: "Fake Model", aliases: ["fake-alias"], parameters: [], variants: [] },
+  {
+    id: "fake-reasoner",
+    displayName: "Fake Reasoner",
+    parameters: [
+      {
+        id: "reasoning_effort",
+        displayName: "Reasoning effort",
+        values: [{ value: "low" }, { value: "medium" }, { value: "high" }],
+      },
+    ],
+    variants: [
+      { displayName: "Fake Reasoner", isDefault: true, params: [{ id: "reasoning_effort", value: "medium" }] },
+      { displayName: "Fake Reasoner High", params: [{ id: "reasoning_effort", value: "high" }] },
+    ],
+  },
 ];
 
 /** Keys starting with these prefixes simulate upstream failures. */
@@ -66,7 +81,7 @@ export const Cursor = {
 
 let agentSeq = 0;
 
-function makeAgent(apiKey, agentId) {
+function makeAgent(apiKey, agentId, model) {
   return {
     agentId,
     apiKey,
@@ -74,6 +89,10 @@ function makeAgent(apiKey, agentId) {
       checkKey(apiKey);
       const prompt = typeof message === "string" ? message : message.text;
       calls.send.push({ apiKey, agentId, prompt });
+      if (process.env.FAKE_SDK_DEBUG) process.stderr.write(`fake-sdk send: tools=${Object.keys(options.local?.customTools ?? {}).join(",")} tail=${JSON.stringify(prompt.slice(-300))}\n`);
+      if (process.env.FAKE_SDK_DELAY_MS) {
+        await new Promise((resolve) => setTimeout(resolve, Number(process.env.FAKE_SDK_DELAY_MS)));
+      }
       if (prompt.includes("FAIL_RATE_LIMIT")) {
         throw new RateLimitError("usage limit exceeded");
       }
@@ -90,6 +109,19 @@ function makeAgent(apiKey, agentId) {
         await emit({ type: "thinking-delta", text: "pondering" });
         const tools = options.local?.customTools ?? {};
         const names = Object.keys(tools);
+        // `CALL_TOOL<<Name|{"json":"args"}>>` calls a specific client tool.
+        const named = /CALL_TOOL<<([A-Za-z0-9_.-]+)\|(\{.*?\})>>/s.exec(prompt);
+        if (named && tools[named[1]] && !/\[tool call_/.test(prompt)) {
+          const result = await tools[named[1]].execute(JSON.parse(named[2]), { toolCallId: `tool-${named[1]}` });
+          text = `tool said: ${result}`;
+          await emit({ type: "text-delta", text });
+          return;
+        }
+        if (prompt.includes("ECHO_MODEL")) {
+          text = JSON.stringify(model ?? null);
+          await emit({ type: "text-delta", text });
+          return;
+        }
         if (prompt.includes("CALL_TOOL") && names.length > 0) {
           const result = await tools[names[0]].execute({ query: "weather" }, { toolCallId: "tool-1" });
           text = `tool said: ${result}`;
@@ -140,10 +172,10 @@ export const Agent = {
     checkKey(options.apiKey);
     agentSeq += 1;
     calls.create.push({ apiKey: options.apiKey });
-    return makeAgent(options.apiKey, `agent-${String(agentSeq)}`);
+    return makeAgent(options.apiKey, `agent-${String(agentSeq)}`, options.model);
   },
   async resume(agentId, options) {
     checkKey(options.apiKey);
-    return makeAgent(options.apiKey, agentId);
+    return makeAgent(options.apiKey, agentId, options.model);
   },
 };
