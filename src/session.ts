@@ -722,6 +722,7 @@ async function settleRun(session: LiveSession, abortSignal: AbortSignal): Promis
     }
     if (result.status === "error") {
       return {
+        ...(result.error ? { error: { message: result.error.message, code: result.error.code } } : {}),
         text: session.text,
         usage: toChatUsage(rawUsage),
         usageKnown: rawUsage !== undefined,

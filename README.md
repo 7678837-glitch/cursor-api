@@ -195,6 +195,21 @@ print(client.chat.completions.create(
 ).choices[0].message.content)
 ```
 
+### Upstream errors
+
+Cursor failures map to distinct HTTP statuses so clients can decide whether to retry:
+
+| Status | `error.code` | When |
+|--------|--------------|------|
+| 429 | `rate_limit_error` | Cursor usage / rate limit (SDK error or a run that ended with a quota failure) |
+| 409 | `conversation_busy` | The Cursor agent already has an active run |
+| 502 | `upstream_authentication_error` | Cursor rejected the key (401/403) |
+| 503 | `upstream_unavailable` | Network failure, Cursor 5xx, or a retryable SDK error |
+| 504 | `upstream_timeout` | Cursor timed out (408/504, deadline exceeded) |
+| 502 | `upstream_error` | Any other Cursor failure |
+
+`error.message` includes Cursor's own message (truncated to 300 characters) when one is available. The gateway system log records the SDK error name, upstream status/code, and Cursor request id for diagnosis.
+
 ---
 
 ## Admin UI

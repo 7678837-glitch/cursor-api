@@ -34,7 +34,7 @@ import {
   parseResponsesRequest,
   ResponsesStreamWriter,
 } from "./responses.js";
-import { getCursorModel, listCursorModels, validateChatRequestModel, warmCursorAccount } from "./cursor.js";
+import { getCursorModel, listCursorModels, runFailureError, validateChatRequestModel, warmCursorAccount } from "./cursor.js";
 import { aliasLiveConversation, runChatTurn, validateChatTurnRequest } from "./session.js";
 import type { AppConfig, CursorChatResult, OpenAiToolCall, ParsedChatRequest, Usage } from "./contracts.js";
 
@@ -353,9 +353,7 @@ async function handleChat(req: IncomingMessage, res: ServerResponse): Promise<vo
         throw cancelledError();
       }
       if (result.status === "error" || result.finish_reason === "error") {
-        httpStatus = 502;
-        errorCode = "upstream_error";
-        throw new GatewayError(502, "upstream_error", "Cursor request failed", "upstream_error");
+        throw runFailureError(result.error);
       }
 
       const toolCalls = result.tool_calls ?? collectedTools;
@@ -593,9 +591,7 @@ async function handleResponses(req: IncomingMessage, res: ServerResponse): Promi
         throw cancelledError();
       }
       if (result.status === "error" || result.finish_reason === "error") {
-        httpStatus = 502;
-        errorCode = "upstream_error";
-        throw new GatewayError(502, "upstream_error", "Cursor request failed", "upstream_error");
+        throw runFailureError(result.error);
       }
 
       const toolCalls = result.tool_calls ?? collectedTools;

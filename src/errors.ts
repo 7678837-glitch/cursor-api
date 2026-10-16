@@ -63,6 +63,14 @@ export function upstreamError(message = "Cursor request failed"): GatewayError {
   return new GatewayError(502, "upstream_error", message, "upstream_error");
 }
 
+export function upstreamUnavailable(message = "Cursor is temporarily unavailable"): GatewayError {
+  return new GatewayError(503, "upstream_unavailable", message, "upstream_error");
+}
+
+export function upstreamTimeout(message = "Cursor request timed out"): GatewayError {
+  return new GatewayError(504, "upstream_timeout", message, "upstream_error");
+}
+
 export function cancelledError(message = "Request cancelled"): GatewayError {
   return new GatewayError(499, "cancelled", message, "cancelled");
 }

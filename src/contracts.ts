@@ -208,4 +208,6 @@ export interface CursorChatResult {
   tool_calls?: OpenAiToolCall[];
   /** Cursor `thinking-delta` text; OpenCode reads this as `reasoning_content`. */
   reasoning?: string;
+  /** Terminal failure details from the Cursor run when `status` is `error`. */
+  error?: { message: string; code?: string };
 }

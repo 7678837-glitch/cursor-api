@@ -1,10 +1,12 @@
 import { mkdir } from "node:fs/promises";
 import {
   Agent,
+  AgentBusyError,
   AuthenticationError,
   ConfigurationError,
   Cursor,
   CursorSdkError,
+  NetworkError,
   RateLimitError,
   type AgentUsage,
   type ModelListItem,
@@ -17,12 +19,15 @@ import {
 } from "@cursor/sdk";
 import type { ModelParam, OpenAiModel, ParsedChatRequest, Usage } from "./contracts.js";
 import {
+  conversationBusyError,
   GatewayError,
   invalidRequest,
   modelNotFound,
   rateLimitError,
   upstreamAuthError,
   upstreamError,
+  upstreamTimeout,
+  upstreamUnavailable,
 } from "./errors.js";
 import { logError } from "./log.js";
 
@@ -483,24 +488,95 @@ export async function disposeAgent(agent: SDKAgent | undefined): Promise<void> {
   agent.close();
 }
 
+const MAX_UPSTREAM_MESSAGE_CHARS = 300;
+
 export function mapCursorError(error: unknown): GatewayError {
   if (error instanceof GatewayError) {
     return error;
   }
+  const mapped = classifyCursorError(error);
+  logUpstreamError(error, mapped);
+  return mapped;
+}
+
+function classifyCursorError(error: unknown): GatewayError {
   if (error instanceof AuthenticationError) {
     return upstreamAuthError();
   }
   if (error instanceof RateLimitError) {
     return rateLimitError(error.message || "Cursor usage limit exceeded");
   }
+  if (error instanceof AgentBusyError) {
+    return conversationBusyError();
+  }
   if (error instanceof ConfigurationError) {
     return invalidRequest(error.message);
   }
-  if (error instanceof CursorSdkError && error.status === 401) {
-    return upstreamAuthError();
+  if (error instanceof NetworkError) {
+    return upstreamUnavailable(withUpstreamDetail("Cannot reach Cursor", error.message));
   }
-  if (error instanceof CursorSdkError && error.status === 429) {
-    return rateLimitError(error.message || "Cursor usage limit exceeded");
+  if (error instanceof CursorSdkError) {
+    const status = error.status;
+    if (status === 401 || status === 403) return upstreamAuthError();
+    if (status === 429) return rateLimitError(error.message || "Cursor usage limit exceeded");
+    if (status === 408 || status === 504) {
+      return upstreamTimeout(withUpstreamDetail("Cursor request timed out", error.message));
+    }
+    if ((status !== undefined && status >= 500) || error.isRetryable) {
+      return upstreamUnavailable(withUpstreamDetail("Cursor is temporarily unavailable", error.message));
+    }
+    return upstreamError(withUpstreamDetail("Cursor request failed", error.message));
   }
   return upstreamError();
+}
+
+/**
+ * Maps a Cursor run that finished with `status: "error"` to a gateway error,
+ * keeping Cursor's own failure message so clients can see what went wrong.
+ */
+export function runFailureError(failure: { message: string; code?: string } | undefined): GatewayError {
+  if (!failure) return upstreamError();
+  const code = failure.code ?? "";
+  const text = `${code} ${failure.message}`;
+  logError("cursor run failed", {
+    ...(failure.code ? { upstream_code: failure.code } : {}),
+    upstream_message: truncateText(failure.message, MAX_UPSTREAM_MESSAGE_CHARS),
+  });
+  if (/rate.?limit|resource.?exhausted|quota|usage.?limit|too.?many.?requests/i.test(text)) {
+    return rateLimitError(withUpstreamDetail("Cursor usage limit exceeded", failure.message));
+  }
+  if (/unauthenticated|unauthori[sz]ed|invalid.?api.?key|permission.?denied/i.test(text)) {
+    return upstreamAuthError();
+  }
+  if (/deadline.?exceeded|timed?.?out/i.test(text)) {
+    return upstreamTimeout(withUpstreamDetail("Cursor request timed out", failure.message));
+  }
+  if (/unavailable|overloaded/i.test(text)) {
+    return upstreamUnavailable(withUpstreamDetail("Cursor is temporarily unavailable", failure.message));
+  }
+  return upstreamError(withUpstreamDetail("Cursor request failed", failure.message));
+}
+
+function withUpstreamDetail(summary: string, detail: string | undefined): string {
+  const trimmed = detail?.trim();
+  if (!trimmed || trimmed === summary) return summary;
+  return `${summary}: ${truncateText(trimmed, MAX_UPSTREAM_MESSAGE_CHARS)}`;
+}
+
+function truncateText(value: string, max: number): string {
+  return value.length <= max ? value : `${value.slice(0, max - 1)}…`;
+}
+
+function logUpstreamError(error: unknown, mapped: GatewayError): void {
+  const sdk = error instanceof CursorSdkError ? error : undefined;
+  logError("cursor upstream error", {
+    code: mapped.code,
+    http_status: mapped.httpStatus,
+    error_name: error instanceof Error ? error.name : typeof error,
+    ...(sdk?.code ? { upstream_code: sdk.code } : {}),
+    ...(sdk?.status !== undefined ? { upstream_status: sdk.status } : {}),
+    ...(sdk?.operation ? { operation: sdk.operation } : {}),
+    ...(sdk?.requestId ? { upstream_request_id: sdk.requestId } : {}),
+    ...(sdk ? { retryable: sdk.isRetryable } : {}),
+  });
 }

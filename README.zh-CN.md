@@ -195,6 +195,21 @@ print(client.chat.completions.create(
 ).choices[0].message.content)
 ```
 
+### 上游错误
+
+Cursor 侧的失败会映射为不同的 HTTP 状态码，方便客户端决定是否重试：
+
+| 状态码 | `error.code` | 场景 |
+|--------|--------------|------|
+| 429 | `rate_limit_error` | Cursor 用量 / 频率限制（SDK 报错，或 run 以额度错误结束） |
+| 409 | `conversation_busy` | 该 Cursor agent 已有进行中的 run |
+| 502 | `upstream_authentication_error` | Cursor 拒绝了 key（401/403） |
+| 503 | `upstream_unavailable` | 网络故障、Cursor 5xx 或可重试的 SDK 错误 |
+| 504 | `upstream_timeout` | Cursor 超时（408/504、deadline exceeded） |
+| 502 | `upstream_error` | 其他 Cursor 错误 |
+
+如果 Cursor 返回了错误信息，`error.message` 会带上它（截断到 300 字符）。网关系统日志会记录 SDK 错误名、上游状态码/错误码和 Cursor request id，便于排查。
+
 ---
 
 ## 管理台
