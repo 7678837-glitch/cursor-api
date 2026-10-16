@@ -89,6 +89,7 @@ function makeAgent(apiKey, agentId, model) {
       checkKey(apiKey);
       const prompt = typeof message === "string" ? message : message.text;
       calls.send.push({ apiKey, agentId, prompt });
+      if (process.env.FAKE_SDK_DEBUG) process.stderr.write(`fake-sdk send: tools=${Object.keys(options.local?.customTools ?? {}).join(",")} tail=${JSON.stringify(prompt.slice(-300))}\n`);
       if (process.env.FAKE_SDK_DELAY_MS) {
         await new Promise((resolve) => setTimeout(resolve, Number(process.env.FAKE_SDK_DELAY_MS)));
       }
@@ -110,7 +111,7 @@ function makeAgent(apiKey, agentId, model) {
         const names = Object.keys(tools);
         // `CALL_TOOL<<Name|{"json":"args"}>>` calls a specific client tool.
         const named = /CALL_TOOL<<([A-Za-z0-9_.-]+)\|(\{.*?\})>>/s.exec(prompt);
-        if (named && tools[named[1]] && !prompt.includes("[tool ")) {
+        if (named && tools[named[1]] && !/\[tool call_/.test(prompt)) {
           const result = await tools[named[1]].execute(JSON.parse(named[2]), { toolCallId: `tool-${named[1]}` });
           text = `tool said: ${result}`;
           await emit({ type: "text-delta", text });
