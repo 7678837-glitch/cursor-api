@@ -5,6 +5,7 @@ import path from "node:path";
 import { handleAdminRequest } from "./admin.js";
 import { requireClientKey } from "./auth.js";
 import { loadConfig } from "./config.js";
+import { CursorKeyPool } from "./keypool.js";
 import {
   getConversationAgentId,
   insertRequestLog,
@@ -47,6 +48,11 @@ try {
   process.exit(1);
 }
 
+const keyPool = new CursorKeyPool(config.cursorApiKeys, { cooldownMs: config.cursorKeyCooldownMs });
+if (keyPool.size > 1) {
+  logInfo("cursor key pool enabled", { keys: keyPool.size, cooldown_ms: config.cursorKeyCooldownMs });
+}
+
 const db = openDb(config.dataDir, {
   retentionDays: config.logRetentionDays,
   maxRows: config.logMaxRows,
@@ -84,7 +90,7 @@ server.listen(config.gatewayPort, config.gatewayHost, () => {
     port: config.gatewayPort,
     version: config.version,
   });
-  warmCursorAccount(config.cursorApiKey);
+  warmCursorAccount(keyPool.primary);
 });
 
 async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
@@ -152,13 +158,13 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
       return;
     }
 
-    if (await handleAdminRequest(req, res, url, { config, db })) {
+    if (await handleAdminRequest(req, res, url, { config, db, keyPool })) {
       return;
     }
 
     if (req.method === "GET" && url.pathname === "/v1/models") {
       const key = requireClientKey(req, db, config.apiKeyPepper);
-      const models = await listCursorModels(config.cursorApiKey);
+      const models = await keyPool.run((apiKey) => listCursorModels(apiKey));
       logInfo("models listed", { api_key_id: key.id, count: models.length });
       sendJson(res, 200, { object: "list", data: models }, cors);
       return;
@@ -170,7 +176,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
       if (id === "") {
         throw modelNotFound(id);
       }
-      const model = await getCursorModel(config.cursorApiKey, id);
+      const model = await keyPool.run((apiKey) => getCursorModel(apiKey, id));
       if (!model) {
         throw modelNotFound(id);
       }
@@ -230,7 +236,7 @@ async function handleChat(req: IncomingMessage, res: ServerResponse): Promise<vo
     if (config.logDetailed) {
       requestDetail = truncateUtf8(buildRequestDetail(parsed), config.logDetailedMaxBytes);
     }
-    await validateChatRequestModel(config.cursorApiKey, parsed);
+    await keyPool.run((apiKey) => validateChatRequestModel(apiKey, parsed));
     const headers = corsHeaders(req);
 
     const abort = new AbortController();
@@ -304,7 +310,8 @@ async function handleChat(req: IncomingMessage, res: ServerResponse): Promise<vo
 
       const upstreamStarted = Date.now();
       const result = await runChatTurn({
-        apiKey: config.cursorApiKey,
+        apiKey: keyPool.primary,
+        keyPool,
         apiKeyId: key.id,
         workspaceDir: config.cursorWorkspace,
         request: parsed,
@@ -503,7 +510,7 @@ async function handleResponses(req: IncomingMessage, res: ServerResponse): Promi
     if (config.logDetailed) {
       requestDetail = truncateUtf8(buildRequestDetail(parsed), config.logDetailedMaxBytes);
     }
-    await validateChatRequestModel(config.cursorApiKey, parsed);
+    await keyPool.run((apiKey) => validateChatRequestModel(apiKey, parsed));
     const headers = corsHeaders(req);
 
     const abort = new AbortController();
@@ -550,7 +557,8 @@ async function handleResponses(req: IncomingMessage, res: ServerResponse): Promi
 
       const upstreamStarted = Date.now();
       const result = await runChatTurn({
-        apiKey: config.cursorApiKey,
+        apiKey: keyPool.primary,
+        keyPool,
         apiKeyId: key.id,
         workspaceDir: config.cursorWorkspace,
         request: parsed,

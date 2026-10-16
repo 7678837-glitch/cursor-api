@@ -97,6 +97,8 @@ detailed = false
 | `[logs].detailed` | 记录请求/响应 JSON，管理台点击日志可查看（默认 **false**）。正文以**明文**存在 `./data`，请保护数据目录 |
 | `[logs].detailed_max_bytes` | 单条请求/响应 JSON 上限（4KiB–1MiB，默认 64KiB） |
 | `[logs].max_detail_bytes` | `model` + 详细正文合计 UTF-8 字节上限（默认 256MiB），超限先删最旧行 |
+| `cursor_api_keys` | 可选的额外 Cursor key，逗号分隔（环境变量 `CURSOR_API_KEYS`）。与 `cursor_api_key` 一起组成 key 池：新建 agent 时在健康 key 间轮询；某个 key 返回上游认证错误或限流时进入冷却，本次请求自动切到下一个 key。已经向客户端输出内容后不再切换；待回传结果的工具轮次继续在原 agent（原 key）上执行 |
+| `cursor_key_cooldown_ms` | 限流后的冷却时间（默认 **60000**，1 秒–24 小时），连续失败翻倍，最多 8 倍。认证失败冷却 15 分钟 |
 | `park_timeout_ms` | 工具轮次在内存里保留多久（默认 **300000**）。网关重启后，下一次工具结果按 HTTP transcript 续场 |
 
 ```bash
@@ -201,7 +203,7 @@ print(client.chat.completions.create(
 
 浏览器访问 `/admin/`：总览（含近 7 天调用曲线）、客户端 Key（创建 / 停用 / 恢复 / 删除）、请求日志、系统日志。
 
-管理 API：`/admin/api/*`，用同一把 `admin_access_key`（`Authorization: Bearer` 或 `X-Management-Key`）。`DELETE /admin/api/keys/{id}` 删除客户端 Key，历史请求日志保留。`GET /admin/api/system-logs` 列出写入 SQLite 的网关 stdout/stderr 事件。
+管理 API：`/admin/api/*`，用同一把 `admin_access_key`（`Authorization: Bearer` 或 `X-Management-Key`）。`DELETE /admin/api/keys/{id}` 删除客户端 Key，历史请求日志保留。`GET /admin/api/system-logs` 列出写入 SQLite 的网关 stdout/stderr 事件。`GET /admin/api/cursor-keys` 查看上游 key 池状态（sha256 指纹、`healthy` / `cooling_down`、失败计数；不返回 key 本身）。概览接口包含 `cursor_keys: {total, healthy}`。
 
 ---
 

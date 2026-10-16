@@ -29,7 +29,8 @@ import { logError } from "./log.js";
 const CATALOG_TTL_MS = 60_000;
 const ACCOUNT_TTL_MS = 10 * 60 * 1000;
 
-let catalogCache: { at: number; apiKey: string; models: ModelListItem[] } | undefined;
+/** Per-key catalog cache so key rotation does not refetch the catalog on every request. */
+const catalogCache = new Map<string, { at: number; models: ModelListItem[] }>();
 let accountCache: {
   at: number;
   apiKey: string;
@@ -165,16 +166,13 @@ export function toChatUsage(usage: TokenUsage | undefined): Usage {
 
 async function loadCatalog(apiKey: string): Promise<ModelListItem[]> {
   const now = Date.now();
-  if (
-    catalogCache &&
-    catalogCache.apiKey === apiKey &&
-    now - catalogCache.at < CATALOG_TTL_MS
-  ) {
-    return catalogCache.models;
+  const cached = catalogCache.get(apiKey);
+  if (cached && now - cached.at < CATALOG_TTL_MS) {
+    return cached.models;
   }
   try {
     const models = await Cursor.models.list({ apiKey });
-    catalogCache = { at: now, apiKey, models };
+    catalogCache.set(apiKey, { at: now, models });
     return models;
   } catch (error) {
     throw mapCursorError(error);

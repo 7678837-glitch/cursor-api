@@ -11,6 +11,7 @@ const DEFAULT_LOG_DETAILED = false;
 const DEFAULT_LOG_DETAILED_MAX_BYTES = 65_536;
 const DEFAULT_LOG_MAX_DETAIL_BYTES = 268_435_456; // 256 MiB across all detail columns
 const DEFAULT_PARK_TIMEOUT_MS = 300_000;
+const DEFAULT_CURSOR_KEY_COOLDOWN_MS = 60_000;
 const CONFIG_FILE_NAME = "gateway.toml";
 
 const EMPTY_CONFIG_TEMPLATE = `# cursor-api configuration (auto-created in container)
@@ -22,6 +23,10 @@ port = 8787
 cursor_api_key = ""
 admin_access_key = ""
 api_key_pepper = ""
+
+# Extra Cursor keys for rotation / failover (comma-separated):
+# cursor_api_keys = "key-2,key-3"
+# cursor_key_cooldown_ms = 60000
 
 # park_timeout_ms = 300000
 
@@ -57,13 +62,7 @@ export function loadConfig(
   const defaultHost = production ? "0.0.0.0" : "127.0.0.1";
 
   return {
-    cursorApiKey: requireSecret(
-      env,
-      "CURSOR_API_KEY",
-      tomlString(toml, "cursor_api_key"),
-      configFile,
-      "cursor_api_key",
-    ),
+    ...cursorKeys(env, toml, configFile),
     adminAccessKey: requireSecret(
       env,
       "ADMIN_ACCESS_KEY",
@@ -130,6 +129,16 @@ export function loadConfig(
       DEFAULT_LOG_MAX_DETAIL_BYTES,
       { min: 1_048_576, max: 10_737_418_240 },
     ),
+    cursorKeyCooldownMs: parseBoundedInt(
+      pickConfigured(
+        env,
+        "CURSOR_KEY_COOLDOWN_MS",
+        intToString(tomlInt(toml, "cursor_key_cooldown_ms")),
+        "cursor_key_cooldown_ms",
+      ),
+      DEFAULT_CURSOR_KEY_COOLDOWN_MS,
+      { min: 1_000, max: 86_400_000 },
+    ),
     parkTimeoutMs: parseBoundedInt(
       pickConfigured(
         env,
@@ -152,6 +161,31 @@ function ensureConfigFile(configFile: string, production: boolean): void {
   } catch {
     // 部分文件系统/挂载不支持 chmod
   }
+}
+
+/**
+ * `cursor_api_key` plus optional `cursor_api_keys` (comma-separated) form the
+ * upstream key pool. At least one key is required; duplicates are dropped.
+ */
+function cursorKeys(
+  env: NodeJS.ProcessEnv,
+  toml: TomlTable,
+  configFile: string,
+): { cursorApiKey: string; cursorApiKeys: string[] } {
+  const primary = pickString(env.CURSOR_API_KEY, tomlString(toml, "cursor_api_key"));
+  const extra = pickString(env.CURSOR_API_KEYS, tomlString(toml, "cursor_api_keys"));
+  const keys: string[] = [];
+  for (const candidate of [primary, ...(extra ?? "").split(",")]) {
+    const key = optionalTrimmed(candidate);
+    if (key !== undefined && !keys.includes(key)) keys.push(key);
+  }
+  const first = keys[0];
+  if (first === undefined) {
+    throw new Error(
+      `Missing cursor_api_key. Set environment variable CURSOR_API_KEY (or CURSOR_API_KEYS) or add it to ${configFile}`,
+    );
+  }
+  return { cursorApiKey: first, cursorApiKeys: keys };
 }
 
 function requireSecret(

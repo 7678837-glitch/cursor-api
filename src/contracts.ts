@@ -4,7 +4,12 @@
  */
 
 export interface AppConfig {
+  /** First key of the pool; kept for single-key callers. */
   cursorApiKey: string;
+  /** Upstream key pool (`cursor_api_key` + `cursor_api_keys`), deduplicated, at least one. */
+  cursorApiKeys: string[];
+  /** Cooldown after an upstream rate limit before a key is tried again. */
+  cursorKeyCooldownMs: number;
   gatewayHost: string;
   gatewayPort: number;
   adminAccessKey: string;

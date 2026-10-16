@@ -5,6 +5,10 @@ host = "0.0.0.0"
 port = 8787
 
 cursor_api_key = ""
+# Optional extra keys, comma-separated; requests rotate across healthy keys
+# and fail over on upstream auth / rate-limit errors.
+# cursor_api_keys = ""
+# cursor_key_cooldown_ms = 60000
 admin_access_key = ""
 api_key_pepper = ""
 
