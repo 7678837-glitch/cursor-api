@@ -1,11 +1,12 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
+import { toAnthropicErrorBody } from "./anthropic.js";
 import { GatewayError, httpStatusOf, toOpenAiErrorBody, toSimpleErrorBody } from "./errors.js";
 
 export function corsHeaders(req: IncomingMessage): Record<string, string> {
   const origin = req.headers.origin;
   return {
     "access-control-allow-origin": typeof origin === "string" && origin.length > 0 ? origin : "*",
-    "access-control-allow-headers": "Authorization, Content-Type, X-Api-Key",
+    "access-control-allow-headers": "Authorization, Content-Type, X-Api-Key, Anthropic-Version, Anthropic-Beta",
     "access-control-allow-methods": "GET, POST, OPTIONS",
     "access-control-max-age": "86400",
   };
@@ -35,6 +36,18 @@ export function sendOpenAiError(
   const status = httpStatusOf(error);
   sendJson(res, status, toOpenAiErrorBody(error, requestId), {
     ...(requestId ? { "x-request-id": requestId } : {}),
+    ...extraHeaders,
+  });
+}
+
+export function sendAnthropicError(
+  res: ServerResponse,
+  error: unknown,
+  requestId?: string,
+  extraHeaders?: Record<string, string>,
+): void {
+  sendJson(res, httpStatusOf(error), toAnthropicErrorBody(error, requestId), {
+    ...(requestId ? { "x-request-id": requestId, "request-id": requestId } : {}),
     ...extraHeaders,
   });
 }

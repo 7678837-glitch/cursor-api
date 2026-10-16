@@ -146,17 +146,36 @@ curl -s http://127.0.0.1:8787/v1/chat/completions \
 
 ## Client integration
 
-**Auth:** `Authorization: Bearer cgk_...` or `X-Api-Key: cgk_...`
+**Auth:** `Authorization: Bearer cgk_...` or `X-Api-Key: cgk_...` (Anthropic clients send `x-api-key`)
 
 | Method | Path | Typical clients |
 |--------|------|-----------------|
 | `POST` | `/v1/chat/completions` | OpenAI SDK, OpenCode `"npm": "@ai-sdk/openai-compatible"` |
 | `POST` | `/v1/responses` | Codex, OpenCode `"npm": "@ai-sdk/openai"` |
+| `POST` | `/v1/messages` | Anthropic SDK, Claude-compatible clients |
 | `GET` | `/v1/models`, `/v1/models/{id}` | Model list |
 
 Streaming (`stream: true`), vision (`image_url`, plus OpenCode `image` / image `file` parts), thinking (`delta.reasoning_content`), and Cursor knobs (`params`, `variant`, `reasoning_effort`, …) are supported. `variant` matches a unique catalog display name, or an effort/reasoning/fast value when Cursor repeats the same display name (OpenCode `--variant high` does not send this field on `@ai-sdk/openai-compatible`; send `variant` or `reasoning_effort` on the body). OpenAI tool calling (`tools` / `tool_calls` / `role: tool`) is supported so clients like OpenCode can run tools locally. Cursor shell/file tools stay off; MCP is enabled only to surface those client tools. Audio is not. `temperature` / `top_p` / `seed` 400; `max_tokens` is accepted. `conversation_id` (or `metadata.conversation_id`) resumes the same Cursor agent for that client key; IDs are limited to 512 UTF-8 bytes and the newest 1,000 mappings per client key are retained. Tool parks time out after `park_timeout_ms` (default 300000); after a gateway restart, tool results continue from the HTTP transcript.
 
 The Cursor SDK accepts each turn as one prompt rather than native OpenAI role messages. This gateway serializes `system` / `developer` / `user` roles into transcript text, so application-supplied `system` or `developer` messages are context, not a hard security boundary against hostile user content.
+
+### Anthropic Messages (`POST /v1/messages`)
+
+Point Anthropic SDKs and Claude-compatible tools at the gateway root (the SDK appends `/v1/messages` itself):
+
+```text
+ANTHROPIC_BASE_URL=http://127.0.0.1:8787
+ANTHROPIC_API_KEY=<your cgk_ client key>      # sent as x-api-key
+```
+
+- `system` (string or text blocks), `text` / `image` (base64 or URL) blocks, `stream: true` (`message_start` → `content_block_*` → `message_delta` → `message_stop`), and thinking output as `thinking` blocks.
+- Client tools: `tools[].input_schema` → `tool_use` blocks with `stop_reason: "tool_use"`; send `tool_result` blocks back in the next user turn (`is_error: true` is passed to the model as an error result). Extra text next to `tool_result` is appended to the last result. Server tools without `input_schema` (`web_search_…`, `bash_…`) are dropped.
+- `tool_choice`: `auto`, `tool`, `none`; `any` degrades to `auto` because Cursor cannot force a call.
+- Ignored: `temperature`, `top_p`, `top_k`, `thinking`, `output_config`, `context_management`, `service_tier`. Rejected: non-empty `stop_sequences`, `document` blocks.
+- Cursor knobs (`params`, `variant`, `reasoning_effort`, `verbosity`, `fast`, `optimize_for`) and `conversation_id` / `metadata.conversation_id` work as on Chat Completions.
+- Errors use the Anthropic shape: `{"type":"error","error":{"type":"invalid_request_error","message":"…"}}`.
+- `usage.input_tokens` / `output_tokens` / `cache_read_input_tokens` / `cache_creation_input_tokens` come from Cursor token usage; `cursor.cost` is included on non-stream responses.
+- `POST /v1/messages/count_tokens` is not implemented.
 
 ### Codex (`POST /v1/responses`)
 
