@@ -20,6 +20,10 @@ export interface AppConfig {
   logDetailedMaxBytes: number;
   logMaxDetailBytes: number;
   parkTimeoutMs: number;
+  /** Upper bound on in-memory Cursor sessions (running or parked for tool results). */
+  maxLiveSessions: number;
+  /** Days a conversation_id → agent mapping survives without use. */
+  conversationTtlDays: number;
 }
 
 export interface LogPolicy {

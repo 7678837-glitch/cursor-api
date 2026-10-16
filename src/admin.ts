@@ -5,6 +5,7 @@ import type { ApiKeyRow, AppConfig } from "./contracts.js";
 import { generateClientKey, requireAdminKey } from "./auth.js";
 import {
   disableApiKey,
+  countConversations,
   deleteApiKey,
   enableApiKey,
   getApiKeyById,
@@ -22,6 +23,7 @@ import {
 import { GatewayError, invalidRequest } from "./errors.js";
 import { readJsonBody, sendJson, sendSimpleError } from "./http.js";
 import { listCursorModels, peekCursorAccount } from "./cursor.js";
+import { sessionStats } from "./session.js";
 
 const ADMIN_PREFIX = "/admin/api/";
 
@@ -71,6 +73,7 @@ async function dispatch(
       schema_version: SCHEMA_VERSION,
       upstream,
       account: peekCursorAccount(),
+      sessions: { ...sessionStats(), conversations_stored: countConversations(ctx.db) },
       keys: {
         total: keys.length,
         enabled: keys.filter((key) => key.enabled === 1).length,

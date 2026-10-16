@@ -98,6 +98,8 @@ detailed = false
 | `[logs].detailed_max_bytes` | 单条请求/响应 JSON 上限（4KiB–1MiB，默认 64KiB） |
 | `[logs].max_detail_bytes` | `model` + 详细正文合计 UTF-8 字节上限（默认 256MiB），超限先删最旧行 |
 | `park_timeout_ms` | 工具轮次在内存里保留多久（默认 **300000**）。网关重启后，下一次工具结果按 HTTP transcript 续场 |
+| `max_live_sessions` | 内存中 Cursor 会话（运行中或等待工具结果）的上限（默认 **256**，1–100000）。达到上限时淘汰最久未活动的停车会话，该客户端仍可通过 transcript 重放继续；如果全部会话都在运行，新请求返回 `503 too_many_sessions` |
+| `conversation_ttl_days` | `conversation_id` → agent 映射闲置超过该天数后删除（默认 **30**）。每分钟清理一次，同时清理闲置超过 2× `park_timeout_ms` 的停车会话。实时统计见 `GET /admin/api/overview` 的 `sessions` |
 
 ```bash
 chmod 600 data/config/gateway.toml

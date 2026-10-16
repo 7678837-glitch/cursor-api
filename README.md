@@ -98,6 +98,8 @@ detailed = false
 | `[logs].detailed_max_bytes` | Per-field cap for request/response JSON (4KiB–1MiB, default 64KiB) |
 | `[logs].max_detail_bytes` | Cap total UTF-8 bytes of `model` + detail columns (default 256MiB); oldest rows dropped first |
 | `park_timeout_ms` | How long a pending tool round stays in memory (default **300000**). After a restart, the next tool-result request continues from the HTTP transcript |
+| `max_live_sessions` | Cap on in-memory Cursor sessions, running or parked for tool results (default **256**, 1–100000). At the cap, the least recently active parked session is evicted; its client still continues through transcript replay. If every session is running, new requests get `503 too_many_sessions` |
+| `conversation_ttl_days` | Drop `conversation_id` → agent mappings unused for this many days (default **30**). Swept every minute together with parked sessions idle past 2× `park_timeout_ms`. Live counts are in `GET /admin/api/overview` → `sessions` |
 
 ```bash
 chmod 600 data/config/gateway.toml

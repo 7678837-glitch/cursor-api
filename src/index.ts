@@ -35,7 +35,13 @@ import {
   ResponsesStreamWriter,
 } from "./responses.js";
 import { getCursorModel, listCursorModels, validateChatRequestModel, warmCursorAccount } from "./cursor.js";
-import { aliasLiveConversation, runChatTurn, validateChatTurnRequest } from "./session.js";
+import {
+  aliasLiveConversation,
+  configureSessionLimits,
+  runChatTurn,
+  startSessionSweeper,
+  validateChatTurnRequest,
+} from "./session.js";
 import type { AppConfig, CursorChatResult, OpenAiToolCall, ParsedChatRequest, Usage } from "./contracts.js";
 
 let config: AppConfig;
@@ -52,6 +58,8 @@ const db = openDb(config.dataDir, {
   maxRows: config.logMaxRows,
   maxDetailBytes: config.logMaxDetailBytes,
 });
+configureSessionLimits({ maxLiveSessions: config.maxLiveSessions });
+startSessionSweeper({ db, conversationTtlDays: config.conversationTtlDays });
 setSystemLogWriter((entry) => {
   insertSystemLog(db, entry);
 });

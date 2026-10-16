@@ -11,6 +11,8 @@ const DEFAULT_LOG_DETAILED = false;
 const DEFAULT_LOG_DETAILED_MAX_BYTES = 65_536;
 const DEFAULT_LOG_MAX_DETAIL_BYTES = 268_435_456; // 256 MiB across all detail columns
 const DEFAULT_PARK_TIMEOUT_MS = 300_000;
+const DEFAULT_MAX_LIVE_SESSIONS = 256;
+const DEFAULT_CONVERSATION_TTL_DAYS = 30;
 const CONFIG_FILE_NAME = "gateway.toml";
 
 const EMPTY_CONFIG_TEMPLATE = `# cursor-api configuration (auto-created in container)
@@ -24,6 +26,8 @@ admin_access_key = ""
 api_key_pepper = ""
 
 # park_timeout_ms = 300000
+# max_live_sessions = 256        # running + parked Cursor sessions kept in memory
+# conversation_ttl_days = 30     # drop conversation_id mappings unused this long
 
 [logs]
 retention_days = 7
@@ -129,6 +133,21 @@ export function loadConfig(
       ),
       DEFAULT_LOG_MAX_DETAIL_BYTES,
       { min: 1_048_576, max: 10_737_418_240 },
+    ),
+    maxLiveSessions: parseBoundedInt(
+      pickConfigured(env, "MAX_LIVE_SESSIONS", intToString(tomlInt(toml, "max_live_sessions")), "max_live_sessions"),
+      DEFAULT_MAX_LIVE_SESSIONS,
+      { min: 1, max: 100_000 },
+    ),
+    conversationTtlDays: parseBoundedInt(
+      pickConfigured(
+        env,
+        "CONVERSATION_TTL_DAYS",
+        intToString(tomlInt(toml, "conversation_ttl_days")),
+        "conversation_ttl_days",
+      ),
+      DEFAULT_CONVERSATION_TTL_DAYS,
+      { min: 1, max: 3650 },
     ),
     parkTimeoutMs: parseBoundedInt(
       pickConfigured(
