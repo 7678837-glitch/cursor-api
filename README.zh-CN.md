@@ -98,6 +98,7 @@ detailed = false
 | `[logs].detailed_max_bytes` | 单条请求/响应 JSON 上限（4KiB–1MiB，默认 64KiB） |
 | `[logs].max_detail_bytes` | `model` + 详细正文合计 UTF-8 字节上限（默认 256MiB），超限先删最旧行 |
 | `park_timeout_ms` | 工具轮次在内存里保留多久（默认 **300000**）。网关重启后，下一次工具结果按 HTTP transcript 续场 |
+| `auth_failure_limit` | 每个客户端地址每分钟允许的认证失败次数（客户端 Key 或管理密钥错误），超过后返回 `429`（默认 **20**；`0` 关闭）。在反向代理后面时所有客户端共用代理地址，请调高该值或在代理层限流 |
 
 ```bash
 chmod 600 data/config/gateway.toml

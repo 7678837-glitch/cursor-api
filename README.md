@@ -98,6 +98,7 @@ detailed = false
 | `[logs].detailed_max_bytes` | Per-field cap for request/response JSON (4KiB–1MiB, default 64KiB) |
 | `[logs].max_detail_bytes` | Cap total UTF-8 bytes of `model` + detail columns (default 256MiB); oldest rows dropped first |
 | `park_timeout_ms` | How long a pending tool round stays in memory (default **300000**). After a restart, the next tool-result request continues from the HTTP transcript |
+| `auth_failure_limit` | Failed authentications (wrong client or admin key) allowed per client address per minute before answering `429` (default **20**; `0` turns it off). Behind a reverse proxy every client shares the proxy address, so raise the limit or rate-limit at the proxy instead |
 
 ```bash
 chmod 600 data/config/gateway.toml
