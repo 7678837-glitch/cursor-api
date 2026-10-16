@@ -166,6 +166,12 @@ export interface ParsedChatRequest {
   params?: ModelParam[];
   variant?: string;
   reasoning_effort?: string;
+  /**
+   * Best-effort reasoning level from clients that always send one (Responses
+   * `reasoning.effort`, Anthropic `thinking` / `output_config.effort`). Applied
+   * only when the model has an effort parameter; never causes a 400.
+   */
+  reasoning_effort_hint?: string;
   verbosity?: string;
   fast?: string;
   optimize_for?: string;

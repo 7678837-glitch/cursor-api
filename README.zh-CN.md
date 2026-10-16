@@ -181,7 +181,7 @@ ANTHROPIC_API_KEY=<你的 cgk_ 客户端 key>      # 以 x-api-key 发送
 
 把 Codex 指到本网关的 `/v1`。压缩（`/compact`）可用：Responses 接受 `parallel_tool_calls: false` 和 `tools: []`（该开关会被忽略，Cursor 不区分）。Chat Completions 对 `parallel_tool_calls: false` 仍 400。
 
-Responses 还会收下并忽略采样参数（`temperature`、`top_p` 等）以及未知顶层字段（`client_metadata`、`include` 等）。Codex 的 `custom` 工具（`apply_patch`）往返发 `custom_tool_call` 和自由格式 `input`。嵌套 `namespace` 工具摊平成 function。没有 name 的 hosted 工具（`web_search` 等）直接丢掉。上一轮的 assistant 正文和 `function_call` 会并成一条消息，避免工具结果 400。`previous_response_id` 续同一个 Cursor Agent。
+Responses 还会收下并忽略采样参数（`temperature`、`top_p` 等）以及未知顶层字段（`client_metadata`、`include` 等）。Codex 的 `custom` 工具（`apply_patch`）往返发 `custom_tool_call` 和自由格式 `input`。嵌套 `namespace` 工具摊平成 function。没有 name 的 hosted 工具（`web_search` 等）直接丢掉。上一轮的 assistant 正文和 `function_call` 会并成一条消息，避免工具结果 400。`previous_response_id` 续同一个 Cursor Agent。`reasoning.effort` 按尽力而为处理：模型有 effort 参数时映射过去（精确匹配，否则取最接近的档位，如 `xhigh` → `high`、`minimal` → `low`），模型没有该参数时忽略，所以 Codex 的默认请求不会 400。顶层 `reasoning_effort` 仍与 Chat Completions 一样严格校验。
 
 ### OpenCode
 

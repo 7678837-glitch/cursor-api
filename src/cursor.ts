@@ -231,6 +231,9 @@ export function resolveChatParams(
     ids: ["reasoning_effort", "effort", "reasoning"],
     displayName: /effort|reasoning|thinking/i,
   });
+  if (request.reasoning_effort === undefined && request.reasoning_effort_hint !== undefined && model) {
+    applyEffortHint(model, merged, request.reasoning_effort_hint);
+  }
   applyNamedParam(model, request.model, merged, request.verbosity, {
     field: "verbosity",
     ids: ["verbosity"],
@@ -376,6 +379,46 @@ function applyNamedParam(
     throw invalidRequest(`Model '${model.id}' does not support '${spec.field}'`);
   }
   merged.set(parameter.id, matchParamValue(parameter, raw));
+}
+
+/** Effort names ordered from least to most reasoning, across OpenAI / Anthropic / Cursor spellings. */
+const EFFORT_RANK = ["none", "off", "minimal", "low", "medium", "high", "xhigh", "max"];
+
+function effortRank(value: string): number {
+  return EFFORT_RANK.indexOf(foldKey(value));
+}
+
+/**
+ * Soft reasoning level: use the model's effort parameter if it has one,
+ * picking the exact value or the nearest known level; otherwise ignore.
+ */
+export function applyEffortHint(model: ModelListItem, merged: Map<string, string>, hint: string): void {
+  const parameter = findParameter(model, {
+    ids: ["reasoning_effort", "effort", "reasoning"],
+    displayName: /effort|reasoning|thinking/i,
+  });
+  if (!parameter || isBooleanParam(parameter)) return;
+  const wanted = foldKey(hint);
+  const exact = parameter.values.find(
+    (item) => foldKey(item.value) === wanted || foldKey(item.displayName ?? "") === wanted,
+  );
+  if (exact) {
+    merged.set(parameter.id, exact.value);
+    return;
+  }
+  const target = effortRank(wanted);
+  if (target < 0) return;
+  let best: { value: string; distance: number; rank: number } | undefined;
+  for (const item of parameter.values) {
+    const rank = effortRank(item.value);
+    if (rank < 0) continue;
+    const distance = Math.abs(rank - target);
+    // Ties go to the lower level so a hint never costs more than asked.
+    if (!best || distance < best.distance || (distance === best.distance && rank < best.rank)) {
+      best = { value: item.value, distance, rank };
+    }
+  }
+  if (best) merged.set(parameter.id, best.value);
 }
 
 function findParameter(
