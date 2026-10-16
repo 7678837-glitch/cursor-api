@@ -4,8 +4,10 @@
 export class CursorSdkError extends Error {
   constructor(message, options = {}) {
     super(message);
-    this.name = "CursorSdkError";
+    this.name = new.target.name;
     this.status = options.status;
+    this.code = options.code;
+    this.requestId = options.requestId;
     this.isRetryable = options.isRetryable ?? false;
   }
 }
@@ -18,6 +20,12 @@ export class AuthenticationError extends CursorAgentError {
 export class RateLimitError extends CursorAgentError {
   constructor(message, options = {}) {
     super(message, { status: 429, ...options });
+  }
+}
+export class NetworkError extends CursorAgentError {}
+export class AgentBusyError extends CursorAgentError {
+  constructor(message, options = {}) {
+    super(message, { status: 409, ...options });
   }
 }
 export class ConfigurationError extends CursorAgentError {
@@ -69,8 +77,12 @@ function makeAgent(apiKey, agentId) {
       if (prompt.includes("FAIL_RATE_LIMIT")) {
         throw new RateLimitError("usage limit exceeded");
       }
+      if (prompt.includes("FAIL_NETWORK")) {
+        throw new NetworkError("connect ECONNREFUSED", { isRetryable: true, requestId: "req-net-1" });
+      }
       let text = "";
       let status = "finished";
+      let runError;
       const emit = async (update) => {
         await options.onDelta?.({ update });
       };
@@ -86,6 +98,12 @@ function makeAgent(apiKey, agentId) {
         }
         if (prompt.includes("UPSTREAM_ERROR")) {
           status = "error";
+          runError = { message: "model backend unavailable", code: "unavailable" };
+          return;
+        }
+        if (prompt.includes("RUN_QUOTA")) {
+          status = "error";
+          runError = { message: "You have reached your usage limit", code: "resource_exhausted" };
           return;
         }
         for (const part of ["PO", "NG"]) {
@@ -103,6 +121,7 @@ function makeAgent(apiKey, agentId) {
           return {
             status,
             result: status === "finished" ? text : undefined,
+            ...(runError ? { error: runError } : {}),
             usage: { inputTokens: 11, outputTokens: 2, totalTokens: 13, cacheReadTokens: 3, cacheWriteTokens: 0 },
           };
         },
