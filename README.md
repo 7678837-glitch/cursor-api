@@ -98,6 +98,7 @@ detailed = false
 | `[logs].detailed_max_bytes` | Per-field cap for request/response JSON (4KiB–1MiB, default 64KiB) |
 | `[logs].max_detail_bytes` | Cap total UTF-8 bytes of `model` + detail columns (default 256MiB); oldest rows dropped first |
 | `park_timeout_ms` | How long a pending tool round stays in memory (default **300000**). After a restart, the next tool-result request continues from the HTTP transcript |
+| `sse_keepalive_ms` | Interval for `: keepalive` SSE comment lines while a stream is open (default **15000**, 1000–600000; `0` disables). Keeps reverse proxies from cutting streams during long thinking or tool rounds. Clients ignore comment lines |
 
 ```bash
 chmod 600 data/config/gateway.toml

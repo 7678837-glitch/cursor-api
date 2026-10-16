@@ -11,6 +11,7 @@ const DEFAULT_LOG_DETAILED = false;
 const DEFAULT_LOG_DETAILED_MAX_BYTES = 65_536;
 const DEFAULT_LOG_MAX_DETAIL_BYTES = 268_435_456; // 256 MiB across all detail columns
 const DEFAULT_PARK_TIMEOUT_MS = 300_000;
+const DEFAULT_SSE_KEEPALIVE_MS = 15_000;
 const CONFIG_FILE_NAME = "gateway.toml";
 
 const EMPTY_CONFIG_TEMPLATE = `# cursor-api configuration (auto-created in container)
@@ -24,6 +25,7 @@ admin_access_key = ""
 api_key_pepper = ""
 
 # park_timeout_ms = 300000
+# sse_keepalive_ms = 15000
 
 [logs]
 retention_days = 7
@@ -130,6 +132,16 @@ export function loadConfig(
       DEFAULT_LOG_MAX_DETAIL_BYTES,
       { min: 1_048_576, max: 10_737_418_240 },
     ),
+    sseKeepaliveMs: parseOptionalInterval(
+      pickConfigured(
+        env,
+        "SSE_KEEPALIVE_MS",
+        intToString(tomlInt(toml, "sse_keepalive_ms")),
+        "sse_keepalive_ms",
+      ),
+      DEFAULT_SSE_KEEPALIVE_MS,
+      { min: 1_000, max: 600_000 },
+    ),
     parkTimeoutMs: parseBoundedInt(
       pickConfigured(
         env,
@@ -232,6 +244,16 @@ function parseBoundedInt(
     );
   }
   return parsed;
+}
+
+/** Like parseBoundedInt, but an explicit `0` means "disabled". */
+function parseOptionalInterval(
+  configured: { value: string | undefined; source: string },
+  fallback: number,
+  bounds: { min: number; max: number },
+): number {
+  if (optionalTrimmed(configured.value) === "0") return 0;
+  return parseBoundedInt(configured, fallback, bounds);
 }
 
 function parseBoolean(

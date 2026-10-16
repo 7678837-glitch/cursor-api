@@ -20,6 +20,8 @@ export interface AppConfig {
   logDetailedMaxBytes: number;
   logMaxDetailBytes: number;
   parkTimeoutMs: number;
+  /** SSE comment heartbeat interval while a stream is open; 0 disables. */
+  sseKeepaliveMs: number;
 }
 
 export interface LogPolicy {

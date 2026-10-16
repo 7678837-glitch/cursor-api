@@ -98,6 +98,7 @@ detailed = false
 | `[logs].detailed_max_bytes` | 单条请求/响应 JSON 上限（4KiB–1MiB，默认 64KiB） |
 | `[logs].max_detail_bytes` | `model` + 详细正文合计 UTF-8 字节上限（默认 256MiB），超限先删最旧行 |
 | `park_timeout_ms` | 工具轮次在内存里保留多久（默认 **300000**）。网关重启后，下一次工具结果按 HTTP transcript 续场 |
+| `sse_keepalive_ms` | 流式响应期间发送 `: keepalive` SSE 注释行的间隔（默认 **15000**，1000–600000；`0` 关闭）。避免长时间思考或工具轮次时被反向代理断开；客户端会忽略注释行 |
 
 ```bash
 chmod 600 data/config/gateway.toml

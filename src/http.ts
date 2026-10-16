@@ -72,10 +72,19 @@ export function readAdminToken(req: IncomingMessage): string | null {
   return null;
 }
 
+const DEFAULT_SSE_KEEPALIVE_MS = 15_000;
+let sseKeepaliveMs = DEFAULT_SSE_KEEPALIVE_MS;
+
+/** Sets the SSE comment heartbeat interval for every stream; 0 disables it. */
+export function configureSse(options: { keepaliveMs: number }): void {
+  sseKeepaliveMs = Math.max(0, Math.floor(options.keepaliveMs));
+}
+
 export function beginSse(
   res: ServerResponse,
   requestId: string,
   extraHeaders?: Record<string, string>,
+  options: { keepaliveMs?: number } = {},
 ): void {
   res.writeHead(200, {
     "content-type": "text/event-stream; charset=utf-8",
@@ -85,6 +94,35 @@ export function beginSse(
     "x-request-id": requestId,
     ...extraHeaders,
   });
+  // Send headers now so clients see the 200 before the first token.
+  res.flushHeaders();
+  startSseKeepalive(res, options.keepaliveMs ?? sseKeepaliveMs);
+}
+
+/**
+ * Long thinking phases or parked tool rounds can leave a stream silent for
+ * minutes; reverse proxies (nginx, Cloudflare, load balancers) then cut it.
+ * SSE comment lines are ignored by OpenAI / Anthropic SDK parsers.
+ */
+function startSseKeepalive(res: ServerResponse, intervalMs: number): void {
+  if (intervalMs <= 0) return;
+  const timer = setInterval(() => {
+    if (sseResponseClosed(res)) {
+      stop();
+      return;
+    }
+    // Skip a beat under backpressure; a data frame is already queued.
+    if (res.writableNeedDrain) return;
+    res.write(": keepalive\n\n");
+  }, intervalMs);
+  timer.unref();
+  const stop = (): void => {
+    clearInterval(timer);
+    res.off("close", stop);
+    res.off("finish", stop);
+  };
+  res.on("close", stop);
+  res.on("finish", stop);
 }
 
 export async function writeSse(res: ServerResponse, data: unknown): Promise<void> {

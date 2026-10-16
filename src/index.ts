@@ -16,6 +16,7 @@ import {
 import { GatewayError, cancelledError, httpStatusOf, modelNotFound } from "./errors.js";
 import {
   beginSse,
+  configureSse,
   corsHeaders,
   readJsonBody,
   sendJson,
@@ -46,6 +47,8 @@ try {
   logError(error instanceof Error ? error.message : "invalid configuration");
   process.exit(1);
 }
+
+configureSse({ keepaliveMs: config.sseKeepaliveMs });
 
 const db = openDb(config.dataDir, {
   retentionDays: config.logRetentionDays,
