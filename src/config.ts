@@ -27,6 +27,7 @@ api_key_pepper = ""
 # Extra Cursor keys for rotation / failover (comma-separated):
 # cursor_api_keys = "key-2,key-3"
 # cursor_key_cooldown_ms = 60000
+# cursor_key_strategy = "round_robin"   # or "least_active"
 
 # park_timeout_ms = 300000
 
@@ -129,6 +130,9 @@ export function loadConfig(
       DEFAULT_LOG_MAX_DETAIL_BYTES,
       { min: 1_048_576, max: 10_737_418_240 },
     ),
+    cursorKeyStrategy: parseKeyStrategy(
+      pickConfigured(env, "CURSOR_KEY_STRATEGY", tomlString(toml, "cursor_key_strategy"), "cursor_key_strategy"),
+    ),
     cursorKeyCooldownMs: parseBoundedInt(
       pickConfigured(
         env,
@@ -186,6 +190,15 @@ function cursorKeys(
     );
   }
   return { cursorApiKey: first, cursorApiKeys: keys };
+}
+
+function parseKeyStrategy(configured: { value: string | undefined; source: string }): "round_robin" | "least_active" {
+  const value = optionalTrimmed(configured.value)?.toLowerCase().replace("-", "_");
+  if (value === undefined || value === "round_robin") return "round_robin";
+  if (value === "least_active") return "least_active";
+  throw new Error(
+    `${configured.source} must be "round_robin" or "least_active" (got ${JSON.stringify(configured.value)})`,
+  );
 }
 
 function requireSecret(

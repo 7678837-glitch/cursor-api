@@ -394,7 +394,7 @@ async function startNewSession(
 
 async function startAgentSession(prompt: string, options: TurnOptions): Promise<CursorChatResult> {
   const pool = options.keyPool;
-  if (!pool || pool.size < 2) {
+  if (!pool) {
     return await startAgentSessionWithKey(prompt, options);
   }
   // Fail over only while nothing has reached the client; afterwards a retry would duplicate output.

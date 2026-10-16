@@ -7,6 +7,9 @@ export const AUTH_FAILURE_COOLDOWN_MS = 15 * 60 * 1000;
 
 export type CursorKeyFailure = "rate_limit" | "auth";
 
+/** `round_robin` rotates evenly; `least_active` prefers the key with the fewest in-flight requests. */
+export type CursorKeyStrategy = "round_robin" | "least_active";
+
 export interface CursorKeyStatus {
   /** Stable, non-reversible fingerprint (sha256 prefix); the key itself is never exposed. */
   id: string;
@@ -15,7 +18,10 @@ export interface CursorKeyStatus {
   last_failure: CursorKeyFailure | null;
   consecutive_failures: number;
   requests: number;
+  successes: number;
   failures: number;
+  active_requests: number;
+  last_used_at: string | null;
 }
 
 interface Entry {
@@ -25,7 +31,10 @@ interface Entry {
   lastFailure: CursorKeyFailure | null;
   consecutiveFailures: number;
   requests: number;
+  successes: number;
   failures: number;
+  active: number;
+  lastUsedAt: number;
 }
 
 /**
@@ -38,7 +47,7 @@ export class CursorKeyPool {
 
   constructor(
     keys: string[],
-    private readonly options: { cooldownMs: number; now?: () => number },
+    private readonly options: { cooldownMs: number; strategy?: CursorKeyStrategy; now?: () => number },
   ) {
     const unique = [...new Set(keys.map((key) => key.trim()).filter((key) => key !== ""))];
     if (unique.length === 0) {
@@ -51,7 +60,10 @@ export class CursorKeyPool {
       lastFailure: null,
       consecutiveFailures: 0,
       requests: 0,
+      successes: 0,
       failures: 0,
+      active: 0,
+      lastUsedAt: 0,
     }));
   }
 
@@ -60,6 +72,10 @@ export class CursorKeyPool {
   }
 
   /** The first configured key; used where one key is enough (e.g. model catalog cache). */
+  get strategy(): CursorKeyStrategy {
+    return this.options.strategy ?? "round_robin";
+  }
+
   get primary(): string {
     return this.entries[0]?.key ?? "";
   }
@@ -73,20 +89,49 @@ export class CursorKeyPool {
     const now = this.now();
     const candidates = this.entries.filter((entry) => !exclude.has(entry.key));
     if (candidates.length === 0) return undefined;
+    const healthy: Array<{ entry: Entry; step: number }> = [];
     for (let step = 0; step < this.entries.length; step += 1) {
       const entry = this.entries[(this.cursor + step) % this.entries.length];
       if (!entry || exclude.has(entry.key) || entry.cooldownUntil > now) continue;
-      this.cursor = (this.cursor + step + 1) % this.entries.length;
-      return entry.key;
+      healthy.push({ entry, step });
+    }
+    if (healthy.length > 0) {
+      let chosen = healthy[0];
+      if (this.strategy === "least_active") {
+        // Fewest in-flight requests wins; ties keep round-robin order.
+        for (const candidate of healthy) {
+          if (chosen && candidate.entry.active < chosen.entry.active) chosen = candidate;
+        }
+      }
+      if (chosen) {
+        this.cursor = (this.cursor + chosen.step + 1) % this.entries.length;
+        chosen.entry.lastUsedAt = now;
+        return chosen.entry.key;
+      }
     }
     const soonest = [...candidates].sort((a, b) => a.cooldownUntil - b.cooldownUntil)[0];
+    if (soonest) soonest.lastUsedAt = now;
     return soonest?.key;
+  }
+
+  /** Marks a request in flight on `key`; call the returned function exactly once when it ends. */
+  acquire(key: string): () => void {
+    const entry = this.find(key);
+    if (!entry) return () => undefined;
+    entry.active += 1;
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      entry.active = Math.max(0, entry.active - 1);
+    };
   }
 
   reportSuccess(key: string): void {
     const entry = this.find(key);
     if (!entry) return;
     entry.requests += 1;
+    entry.successes += 1;
     if (entry.consecutiveFailures > 0 || entry.cooldownUntil > 0) {
       logInfo("cursor key recovered", { key_id: entry.id });
     }
@@ -135,6 +180,7 @@ export class CursorKeyPool {
       const key = this.pick(tried);
       if (key === undefined) throw lastError;
       tried.add(key);
+      const release = this.acquire(key);
       try {
         const value = await fn(key);
         this.reportSuccess(key);
@@ -145,6 +191,8 @@ export class CursorKeyPool {
         if (!keySpecific || tried.size >= this.entries.length || !canRetry(error)) {
           throw error;
         }
+      } finally {
+        release();
       }
     }
   }
@@ -158,7 +206,10 @@ export class CursorKeyPool {
       last_failure: entry.lastFailure,
       consecutive_failures: entry.consecutiveFailures,
       requests: entry.requests,
+      successes: entry.successes,
       failures: entry.failures,
+      active_requests: entry.active,
+      last_used_at: entry.lastUsedAt > 0 ? new Date(entry.lastUsedAt).toISOString() : null,
     }));
   }
 

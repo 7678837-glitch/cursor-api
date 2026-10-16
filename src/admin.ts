@@ -93,7 +93,11 @@ async function dispatch(
   }
 
   if (method === "GET" && pathname === "/admin/api/cursor-keys") {
-    sendJson(res, 200, { keys: ctx.keyPool.snapshot() });
+    sendJson(res, 200, {
+      strategy: ctx.keyPool.strategy,
+      cooldown_ms: ctx.config.cursorKeyCooldownMs,
+      keys: ctx.keyPool.snapshot(),
+    });
     return;
   }
 

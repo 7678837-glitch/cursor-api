@@ -10,6 +10,8 @@ export interface AppConfig {
   cursorApiKeys: string[];
   /** Cooldown after an upstream rate limit before a key is tried again. */
   cursorKeyCooldownMs: number;
+  /** Key selection: `round_robin` (default) or `least_active`. */
+  cursorKeyStrategy: "round_robin" | "least_active";
   gatewayHost: string;
   gatewayPort: number;
   adminAccessKey: string;

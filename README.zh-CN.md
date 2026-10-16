@@ -99,6 +99,7 @@ detailed = false
 | `[logs].max_detail_bytes` | `model` + 详细正文合计 UTF-8 字节上限（默认 256MiB），超限先删最旧行 |
 | `cursor_api_keys` | 可选的额外 Cursor key，逗号分隔（环境变量 `CURSOR_API_KEYS`）。与 `cursor_api_key` 一起组成 key 池：新建 agent 时在健康 key 间轮询；某个 key 返回上游认证错误或限流时进入冷却，本次请求自动切到下一个 key。已经向客户端输出内容后不再切换；待回传结果的工具轮次继续在原 agent（原 key）上执行 |
 | `cursor_key_cooldown_ms` | 限流后的冷却时间（默认 **60000**，1 秒–24 小时），连续失败翻倍，最多 8 倍。认证失败冷却 15 分钟 |
+| `cursor_key_strategy` | `round_robin`（默认）轮流使用各 key；`least_active` 把每个请求发给当前进行中请求最少的健康 key，持平时轮流。`GET /admin/api/cursor-keys` 返回每个 key 的 `active_requests`、`successes`、`failures`、`last_used_at` |
 | `park_timeout_ms` | 工具轮次在内存里保留多久（默认 **300000**）。网关重启后，下一次工具结果按 HTTP transcript 续场 |
 
 ```bash

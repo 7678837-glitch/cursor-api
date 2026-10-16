@@ -48,9 +48,16 @@ try {
   process.exit(1);
 }
 
-const keyPool = new CursorKeyPool(config.cursorApiKeys, { cooldownMs: config.cursorKeyCooldownMs });
+const keyPool = new CursorKeyPool(config.cursorApiKeys, {
+  cooldownMs: config.cursorKeyCooldownMs,
+  strategy: config.cursorKeyStrategy,
+});
 if (keyPool.size > 1) {
-  logInfo("cursor key pool enabled", { keys: keyPool.size, cooldown_ms: config.cursorKeyCooldownMs });
+  logInfo("cursor key pool enabled", {
+    keys: keyPool.size,
+    cooldown_ms: config.cursorKeyCooldownMs,
+    strategy: config.cursorKeyStrategy,
+  });
 }
 
 const db = openDb(config.dataDir, {
