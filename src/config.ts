@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import type { AppConfig } from "./contracts.js";
+import { parseModelAliases } from "./model-alias.js";
 
 const MAX_BODY_BYTES = 4_194_304;
 const DEFAULT_PORT = 8787;
@@ -24,6 +25,10 @@ admin_access_key = ""
 api_key_pepper = ""
 
 # park_timeout_ms = 300000
+# POST /v1/messages/count_tokens: "estimate" (rough local count) or "off" (404)
+# anthropic_count_tokens = "estimate"
+# Map client model names onto Cursor models (first match wins, * is a wildcard):
+# model_aliases = "claude-opus-*=composer-2.5, claude-sonnet-*=composer-2.5, claude-haiku-*=composer-2.5"
 
 [logs]
 retention_days = 7
@@ -77,6 +82,13 @@ export function loadConfig(
       tomlString(toml, "api_key_pepper"),
       configFile,
       "api_key_pepper",
+    ),
+    anthropicCountTokens: parseCountTokensMode(
+      pickConfigured(env, "ANTHROPIC_COUNT_TOKENS", tomlString(toml, "anthropic_count_tokens"), "anthropic_count_tokens"),
+    ),
+    modelAliases: parseModelAliases(
+      pickString(env.MODEL_ALIASES, tomlString(toml, "model_aliases")),
+      "model_aliases",
     ),
     gatewayHost: pickString(env.GATEWAY_HOST, tomlString(toml, "host")) ?? defaultHost,
     gatewayPort: parsePositiveInt(
@@ -152,6 +164,13 @@ function ensureConfigFile(configFile: string, production: boolean): void {
   } catch {
     // 部分文件系统/挂载不支持 chmod
   }
+}
+
+function parseCountTokensMode(configured: { value: string | undefined; source: string }): "estimate" | "off" {
+  const value = optionalTrimmed(configured.value)?.toLowerCase();
+  if (value === undefined || value === "estimate") return "estimate";
+  if (value === "off") return "off";
+  throw new Error(`${configured.source} must be "estimate" or "off" (got ${JSON.stringify(configured.value)})`);
 }
 
 function requireSecret(

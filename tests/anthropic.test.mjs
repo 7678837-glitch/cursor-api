@@ -97,10 +97,9 @@ test("anthropic parse marks error tool results and rejects unsupported input", (
   assert.equal(parsed.messages[2].content, "[error]\nboom");
 
   const bad = [
-    [{ model: "m", messages: [{ role: "system", content: "x" }] }, /role must be/],
+    [{ model: "m", messages: [{ role: "tool", content: "x" }] }, /role must be/],
     [{ model: "m", messages: [{ role: "user", content: "x" }], stop_sequences: ["\n"] }, /stop_sequences/],
     [{ model: "m", messages: [{ role: "user", content: "x" }], max_tokens: 0 }, /max_tokens/],
-    [{ model: "m", messages: [{ role: "user", content: "x" }], bogus: 1 }, /Unknown field 'bogus'/],
     [{ model: "m", messages: [{ role: "user", content: [{ type: "document" }] }] }, /not supported/],
     [{ model: "m", messages: [] }, /non-empty array/],
     [{ model: "m", messages: [{ role: "user", content: "x" }], tool_choice: { type: "required" } }, /tool_choice.type/],
@@ -237,7 +236,7 @@ test("POST /v1/messages works end to end against a fake Cursor SDK", { timeout: 
     const invalid = await fetch(`${gateway.baseUrl}/v1/messages`, {
       method: "POST",
       headers,
-      body: JSON.stringify({ model: "fake-model", max_tokens: 8, messages: [{ role: "system", content: "x" }] }),
+      body: JSON.stringify({ model: "fake-model", max_tokens: 8, messages: [{ role: "tool", content: "x" }] }),
     });
     assert.equal(invalid.status, 400);
     assert.equal((await invalid.json()).error.type, "invalid_request_error");

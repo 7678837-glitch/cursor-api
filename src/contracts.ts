@@ -4,6 +4,10 @@
  */
 
 export interface AppConfig {
+  /** `POST /v1/messages/count_tokens`: rough local estimate, or 404 when off. */
+  anthropicCountTokens: "estimate" | "off";
+  /** `model_aliases` rules applied to every request's `model` before catalog lookup. */
+  modelAliases: Array<{ pattern: string; target: string; matcher: RegExp }>;
   cursorApiKey: string;
   gatewayHost: string;
   gatewayPort: number;

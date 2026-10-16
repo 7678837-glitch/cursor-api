@@ -5,6 +5,7 @@ import path from "node:path";
 import { handleAdminRequest } from "./admin.js";
 import { requireClientKey } from "./auth.js";
 import { loadConfig } from "./config.js";
+import { resolveModelAlias } from "./model-alias.js";
 import {
   getConversationAgentId,
   insertRequestLog,
@@ -27,6 +28,7 @@ import {
 import {
   AnthropicStreamWriter,
   encodeAnthropicMessage,
+  estimateAnthropicInputTokens,
   newAnthropicMessageId,
   parseAnthropicMessagesRequest,
 } from "./anthropic.js";
@@ -126,6 +128,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
           chat_completions: "POST /v1/chat/completions",
           responses: "POST /v1/responses",
           messages: "POST /v1/messages (Anthropic)",
+          count_tokens: "POST /v1/messages/count_tokens (estimate)",
           models: "GET /v1/models",
           model: "GET /v1/models/{id}",
         },
@@ -191,6 +194,11 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
       return;
     }
 
+    if (req.method === "POST" && url.pathname === "/v1/messages/count_tokens") {
+      await handleCountTokens(req, res);
+      return;
+    }
+
     if (req.method === "POST" && url.pathname === "/v1/messages") {
       await handleMessages(req, res);
       return;
@@ -241,6 +249,7 @@ async function handleChat(req: IncomingMessage, res: ServerResponse): Promise<vo
     model = peekModel(body);
     requestDetail = snapshotIncomingBody(body);
     const parsed = parseChatCompletionsRequest(body);
+    parsed.model = resolveModelAlias(config.modelAliases, parsed.model);
     model = parsed.model;
     stream = parsed.stream ? 1 : 0;
     validateChatTurnRequest(parsed);
@@ -489,6 +498,23 @@ async function handleChat(req: IncomingMessage, res: ServerResponse): Promise<vo
   }
 }
 
+async function handleCountTokens(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  requireClientKey(req, db, config.apiKeyPepper);
+  if (config.anthropicCountTokens === "off") {
+    throw new GatewayError(404, "not_found", "count_tokens is disabled on this gateway", "invalid_request_error");
+  }
+  const body = await readJsonBody(req, config.maxBodyBytes);
+  // Validate the same shape /v1/messages accepts (count_tokens has no max_tokens).
+  const parsed = parseAnthropicMessagesRequest(body);
+  resolveModelAlias(config.modelAliases, parsed.model);
+  sendJson(
+    res,
+    200,
+    { input_tokens: estimateAnthropicInputTokens(body as Record<string, unknown>) },
+    { "x-token-count-estimated": "true", ...corsHeaders(req) },
+  );
+}
+
 async function handleMessages(req: IncomingMessage, res: ServerResponse): Promise<void> {
   const started = Date.now();
   const requestId = newAnthropicMessageId();
@@ -511,6 +537,7 @@ async function handleMessages(req: IncomingMessage, res: ServerResponse): Promis
     model = peekModel(body);
     requestDetail = snapshotIncomingBody(body);
     const parsed = parseAnthropicMessagesRequest(body);
+    parsed.model = resolveModelAlias(config.modelAliases, parsed.model);
     model = parsed.model;
     stream = parsed.stream ? 1 : 0;
     validateChatTurnRequest(parsed);
@@ -699,6 +726,7 @@ async function handleResponses(req: IncomingMessage, res: ServerResponse): Promi
     model = peekModel(body);
     requestDetail = snapshotIncomingBody(body);
     const parsed = parseResponsesRequest(body);
+    parsed.model = resolveModelAlias(config.modelAliases, parsed.model);
     model = parsed.model;
     stream = parsed.stream ? 1 : 0;
     const resumeId = parsed.conversation_id;

@@ -11,20 +11,11 @@ import { parseChatCompletionsRequest } from "./openai.js";
  * conversation routing behave exactly like `/v1/chat/completions`.
  */
 
-/** Sampling / beta fields Anthropic clients send by default. Cursor has no equivalent; ignored. */
-const IGNORED_FIELDS = new Set([
-  "temperature",
-  "top_p",
-  "top_k",
-  "thinking",
-  "service_tier",
-  "container",
-  "context_management",
-  "mcp_servers",
-  "output_config",
-  "betas",
-]);
-
+/**
+ * Fields the gateway maps. Everything else (sampling knobs, `context_management`,
+ * `safeguards`, `container`, new beta fields…) is ignored: Anthropic clients add
+ * beta request fields often, and Cursor has no equivalent for them.
+ */
 const PASSTHROUGH_FIELDS = [
   "params",
   "variant",
@@ -34,31 +25,22 @@ const PASSTHROUGH_FIELDS = [
   "optimize_for",
 ] as const;
 
-const ACCEPTED_FIELDS = new Set<string>([
-  "model",
-  "messages",
-  "system",
-  "max_tokens",
-  "stream",
-  "stop_sequences",
-  "metadata",
-  "tools",
-  "tool_choice",
-  "conversation_id",
-  ...PASSTHROUGH_FIELDS,
-  ...IGNORED_FIELDS,
+/** Assistant history blocks with no Cursor equivalent (thinking, server tool traffic). */
+const SKIPPED_BLOCK_TYPES = new Set([
+  "thinking",
+  "redacted_thinking",
+  "server_tool_use",
+  "web_search_tool_result",
+  "web_fetch_tool_result",
+  "code_execution_tool_result",
+  "mcp_tool_use",
+  "mcp_tool_result",
+  "container_upload",
 ]);
-
-const SKIPPED_BLOCK_TYPES = new Set(["thinking", "redacted_thinking"]);
 
 export function parseAnthropicMessagesRequest(body: unknown): ParsedChatRequest {
   if (!isPlainObject(body)) {
     throw invalidRequest("Request body must be a JSON object");
-  }
-  for (const key of Object.keys(body)) {
-    if (!ACCEPTED_FIELDS.has(key)) {
-      throw invalidRequest(`Unknown field '${key}'`);
-    }
   }
   if ("max_tokens" in body && body.max_tokens !== undefined) {
     if (typeof body.max_tokens !== "number" || !Number.isInteger(body.max_tokens) || body.max_tokens < 1) {
@@ -88,7 +70,7 @@ export function parseAnthropicMessagesRequest(body: unknown): ParsedChatRequest 
 
   const chatBody: Record<string, unknown> = {
     model: body.model,
-    messages,
+    messages: foldSystemMessages(messages),
     stream: body.stream,
     max_tokens: body.max_tokens,
     tools: convertTools(body.tools),
@@ -97,6 +79,7 @@ export function parseAnthropicMessagesRequest(body: unknown): ParsedChatRequest 
   for (const field of PASSTHROUGH_FIELDS) {
     if (body[field] !== undefined) chatBody[field] = body[field];
   }
+  const effortHint = anthropicEffortHint(body.thinking, body.output_config);
   const conversationId = conversationIdOf(body);
   if (conversationId !== undefined) chatBody.conversation_id = conversationId;
   for (const key of Object.keys(chatBody)) {
@@ -104,7 +87,59 @@ export function parseAnthropicMessagesRequest(body: unknown): ParsedChatRequest 
   }
   const parsed = parseChatCompletionsRequest(chatBody);
   parsed.includeUsage = true;
+  if (effortHint !== undefined) parsed.reasoning_effort_hint = effortHint;
   return parsed;
+}
+
+/**
+ * `output_config.effort` (low / medium / high / max) wins; otherwise
+ * `thinking.budget_tokens` picks a level and `thinking.type: "disabled"`
+ * asks for the lowest. `adaptive` leaves the model default. Applied as a
+ * hint, so models without an effort parameter are unaffected.
+ */
+export function anthropicEffortHint(thinking: unknown, outputConfig: unknown): string | undefined {
+  if (isPlainObject(outputConfig) && typeof outputConfig.effort === "string" && outputConfig.effort !== "") {
+    return outputConfig.effort;
+  }
+  if (!isPlainObject(thinking)) return undefined;
+  if (thinking.type === "disabled") return "minimal";
+  if (thinking.type === "enabled" && typeof thinking.budget_tokens === "number") {
+    if (thinking.budget_tokens < 4_096) return "low";
+    if (thinking.budget_tokens < 16_384) return "medium";
+    return "high";
+  }
+  return undefined;
+}
+
+/**
+ * Claude Code sends `system` messages right after a user turn (trailing on
+ * the first request, then mid-history on later ones). A turn must end on a
+ * user / tool message, and parked tool rounds are matched by hashing the
+ * history, so a system message that follows a user / tool message is always
+ * folded into it as marked context. That keeps the history identical across
+ * rounds. Leading system messages stay system messages.
+ */
+function foldSystemMessages(messages: Record<string, unknown>[]): Record<string, unknown>[] {
+  const out: Record<string, unknown>[] = [];
+  for (const message of messages) {
+    const previous = out[out.length - 1];
+    const foldable =
+      message.role === "system" &&
+      typeof message.content === "string" &&
+      (previous?.role === "user" || previous?.role === "tool");
+    if (!foldable || !previous) {
+      out.push(message);
+      continue;
+    }
+    if (message.content === "") continue;
+    const note = `[system]\n${message.content as string}`;
+    if (Array.isArray(previous.content)) {
+      previous.content = [...(previous.content as unknown[]), { type: "text", text: note }];
+    } else if (typeof previous.content === "string") {
+      previous.content = previous.content === "" ? note : `${previous.content}\n\n${note}`;
+    }
+  }
+  return out;
 }
 
 function systemText(value: unknown): string | undefined {
@@ -128,10 +163,20 @@ function convertMessage(item: unknown, index: number): Record<string, unknown>[]
   if (!isPlainObject(item)) {
     throw invalidRequest(`${label} must be an object`);
   }
-  if (item.role !== "user" && item.role !== "assistant") {
-    throw invalidRequest(`${label}.role must be 'user' or 'assistant'`);
+  if (item.role !== "user" && item.role !== "assistant" && item.role !== "system") {
+    throw invalidRequest(`${label}.role must be 'user', 'assistant', or 'system'`);
   }
   const blocks = normalizeBlocks(item.content, label);
+  if (item.role === "system") {
+    // Mid-conversation system messages (sent by Claude Code) carry text blocks only.
+    const text = blocks.map((block, index) => {
+      if (block.type !== "text") {
+        throw invalidRequest(`${label}.content[${String(index)}] must be a text block in system messages`);
+      }
+      return textOf(block, `${label}.content[${String(index)}]`);
+    });
+    return [{ role: "system", content: text.join("\n\n") }];
+  }
   return item.role === "assistant"
     ? [convertAssistant(blocks, label)]
     : convertUser(blocks, label);
@@ -580,4 +625,44 @@ export function newAnthropicMessageId(): string {
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/**
+ * Rough prompt-size estimate for `POST /v1/messages/count_tokens`. Cursor has
+ * no tokenizer endpoint, so this counts ~4 ASCII characters per token and one
+ * token per non-ASCII character over the system prompt, messages and tool
+ * schemas. Clients use it for context meters, not billing.
+ */
+export function estimateAnthropicInputTokens(body: Record<string, unknown>): number {
+  const parts: string[] = [];
+  const collect = (value: unknown): void => {
+    if (typeof value === "string") {
+      parts.push(value);
+    } else if (Array.isArray(value)) {
+      for (const item of value) collect(item);
+    } else if (isPlainObject(value)) {
+      if (value.type === "image" || value.type === "document") {
+        parts.push("x".repeat(6_000)); // ~1.5k tokens per attachment
+        return;
+      }
+      for (const [key, item] of Object.entries(value)) {
+        if (key === "cache_control" || key === "signature" || key === "type" || key === "role") continue;
+        if (key === "input_schema" || key === "input") {
+          parts.push(JSON.stringify(item ?? null));
+        } else {
+          collect(item);
+        }
+      }
+    }
+  };
+  collect(body.system);
+  collect(body.messages);
+  collect(body.tools);
+  let ascii = 0;
+  let other = 0;
+  for (const char of parts.join("")) {
+    if (char.charCodeAt(0) < 128) ascii += 1;
+    else other += 1;
+  }
+  return Math.max(1, Math.ceil(ascii / 4) + other);
 }
