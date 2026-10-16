@@ -5,6 +5,13 @@
 const SENSITIVE_KEY =
   /api[_-]?key|access[_-]?key|authorization|cookie|pepper|secret|password|passwd|credential|(^|[_-])token($|[_-](value|secret))|bearer/i;
 
+/** Identifiers that merely name a credential (`api_key_id`, `key_prefix`) are safe to log. */
+const IDENTIFIER_SUFFIX = /[_-](id|ids|prefix|name|count|source)$/i;
+
+function isSensitiveKey(key: string): boolean {
+  return SENSITIVE_KEY.test(key) && !IDENTIFIER_SUFFIX.test(key);
+}
+
 /** Credential-looking substrings inside free text, masked in place so the rest stays readable. */
 const SECRET_PATTERNS: RegExp[] = [
   /\b(Bearer|Basic)\s+[A-Za-z0-9._~+/=-]{8,}/gi,
@@ -87,7 +94,7 @@ export function truncateUtf8(text: string, maxBytes: number): string {
 export function sanitizeFields(fields: Record<string, unknown>): Record<string, unknown> {
   const safe: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(fields)) {
-    if (SENSITIVE_KEY.test(key) && value !== null && value !== undefined && typeof value !== "number" && typeof value !== "boolean") {
+    if (isSensitiveKey(key) && value !== null && value !== undefined && typeof value !== "number" && typeof value !== "boolean") {
       safe[key] = "[redacted]";
       continue;
     }

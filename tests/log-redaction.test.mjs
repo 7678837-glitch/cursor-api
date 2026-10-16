@@ -11,6 +11,8 @@ test("token counts and ordinary text survive redaction", () => {
     error: "max_tokens must be a positive integer",
     model: "gpt-5",
     tokens_stored: true,
+    api_key_id: "k_123",
+    key_prefix: "cgk_abc",
   });
   assert.deepEqual(out, {
     input_tokens: 120,
@@ -20,6 +22,8 @@ test("token counts and ordinary text survive redaction", () => {
     error: "max_tokens must be a positive integer",
     model: "gpt-5",
     tokens_stored: true,
+    api_key_id: "k_123",
+    key_prefix: "cgk_abc",
   });
 });
 
