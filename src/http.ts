@@ -36,11 +36,12 @@ export function sendOpenAiError(
   sendJson(res, status, toOpenAiErrorBody(error, requestId), {
     ...(requestId ? { "x-request-id": requestId } : {}),
     ...extraHeaders,
+    ...GatewayError.retryAfterHeaders(error),
   });
 }
 
 export function sendSimpleError(res: ServerResponse, error: unknown): void {
-  sendJson(res, httpStatusOf(error), toSimpleErrorBody(error));
+  sendJson(res, httpStatusOf(error), toSimpleErrorBody(error), GatewayError.retryAfterHeaders(error));
 }
 
 export function readBearer(req: IncomingMessage): string | null {

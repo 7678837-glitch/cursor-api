@@ -98,6 +98,8 @@ detailed = false
 | `[logs].detailed_max_bytes` | Per-field cap for request/response JSON (4KiB–1MiB, default 64KiB) |
 | `[logs].max_detail_bytes` | Cap total UTF-8 bytes of `model` + detail columns (default 256MiB); oldest rows dropped first |
 | `park_timeout_ms` | How long a pending tool round stays in memory (default **300000**). After a restart, the next tool-result request continues from the HTTP transcript |
+| `auth_failure_limit` | Failed authentications allowed per client address in any 60-second sliding window (default **20**, max 1000; `0` turns it off). Admin and client keys are counted separately. **Admin:** once the limit is reached, every admin request from that address gets `429` with `Retry-After` until the window clears, even with the correct key. **Client keys:** a valid key is never throttled; only further wrong keys get `429` + `Retry-After` instead of `401`. Requests without any key are not counted. IPv6 addresses are grouped per /64 |
+| `trusted_proxies` | Comma-separated IPs or CIDRs of your reverse proxies, e.g. `"127.0.0.1, 172.18.0.0/16"` (env `TRUSTED_PROXIES`). Default empty: the TCP peer address is the client address and `X-Forwarded-For` is ignored. When the peer is listed, the client address is the right-most `X-Forwarded-For` entry that is not a listed proxy. Behind a proxy without this setting, all clients share the proxy's address for `auth_failure_limit`. Only list proxies that overwrite or append `X-Forwarded-For` (nginx `proxy_add_x_forwarded_for`, Caddy default) |
 
 ```bash
 chmod 600 data/config/gateway.toml

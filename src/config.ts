@@ -24,6 +24,8 @@ admin_access_key = ""
 api_key_pepper = ""
 
 # park_timeout_ms = 300000
+# auth_failure_limit = 20   # failed auth attempts per client address per minute; 0 = off
+# trusted_proxies = ""     # reverse proxy IPs/CIDRs whose X-Forwarded-For is trusted
 
 [logs]
 retention_days = 7
@@ -140,6 +142,17 @@ export function loadConfig(
       DEFAULT_PARK_TIMEOUT_MS,
       { min: 5_000, max: 3_600_000 },
     ),
+    authFailureLimit: parseAuthFailureLimit(
+      pickConfigured(
+        env,
+        "AUTH_FAILURE_LIMIT",
+        intToString(tomlInt(toml, "auth_failure_limit")),
+        "auth_failure_limit",
+      ),
+    ),
+    trustedProxies: parseTrustedProxies(
+      pickConfigured(env, "TRUSTED_PROXIES", tomlString(toml, "trusted_proxies"), "trusted_proxies"),
+    ),
   };
 }
 
@@ -218,6 +231,21 @@ function parsePositiveInt(
     );
   }
   return parsed;
+}
+
+/** Like parseBoundedInt but allows 0, which switches the limit off. */
+function parseAuthFailureLimit(configured: { value: string | undefined; source: string }): number {
+  if (configured.value !== undefined && configured.value.trim() === "0") return 0;
+  return parseBoundedInt(configured, 20, { min: 1, max: 1_000 });
+}
+
+/** Comma-separated IPs or CIDRs; validated when the throttle is configured. */
+function parseTrustedProxies(configured: { value: string | undefined; source: string }): string[] {
+  if (configured.value === undefined) return [];
+  return configured.value
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter((entry) => entry !== "");
 }
 
 function parseBoundedInt(

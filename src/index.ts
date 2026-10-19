@@ -4,6 +4,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import path from "node:path";
 import { handleAdminRequest } from "./admin.js";
 import { requireClientKey } from "./auth.js";
+import { configureAuthThrottle } from "./auth-throttle.js";
 import { loadConfig } from "./config.js";
 import {
   getConversationAgentId,
@@ -44,6 +45,13 @@ try {
   config = loadConfig();
 } catch (error) {
   logError(error instanceof Error ? error.message : "invalid configuration");
+  process.exit(1);
+}
+
+try {
+  configureAuthThrottle(config.authFailureLimit, { trustedProxies: config.trustedProxies });
+} catch (error) {
+  logError(error instanceof Error ? error.message : "invalid trusted_proxies");
   process.exit(1);
 }
 
@@ -147,7 +155,14 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
         url.pathname === "/management.html")
     ) {
       const html = fs.readFileSync(adminPagePath, "utf8");
-      res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
+      res.writeHead(200, {
+        "content-type": "text/html; charset=utf-8",
+        "cache-control": "no-store",
+        "x-frame-options": "DENY",
+        "content-security-policy": "frame-ancestors 'none'",
+        "x-content-type-options": "nosniff",
+        "referrer-policy": "no-referrer",
+      });
       res.end(html);
       return;
     }
