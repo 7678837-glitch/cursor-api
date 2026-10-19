@@ -1,8 +1,10 @@
 import fs from "node:fs";
 import path from "node:path";
+import { logWarn } from "./log.js";
 import type { AppConfig } from "./contracts.js";
 
 const MAX_BODY_BYTES = 4_194_304;
+const DEFAULT_HOST = "127.0.0.1";
 const DEFAULT_PORT = 8787;
 const DEFAULT_DATA_DIR = "data";
 const DEFAULT_LOG_RETENTION_DAYS = 7;
@@ -16,7 +18,7 @@ const CONFIG_FILE_NAME = "gateway.toml";
 const EMPTY_CONFIG_TEMPLATE = `# cursor-api configuration (auto-created in container)
 # Fill the three secrets below, then restart the gateway.
 
-host = "0.0.0.0"
+# host = "0.0.0.0"  # unset: Docker image default (GATEWAY_DEFAULT_HOST=0.0.0.0), else 127.0.0.1
 port = 8787
 
 cursor_api_key = ""
@@ -39,9 +41,12 @@ interface TomlTable {
   [key: string]: string | number | boolean | TomlTable;
 }
 
+export type ConfigWarning = (message: string, fields: Record<string, unknown>) => void;
+
 export function loadConfig(
   env: NodeJS.ProcessEnv = process.env,
   cwd: string = process.cwd(),
+  warn: ConfigWarning = logWarn,
 ): AppConfig {
   const dataDirHint = optionalTrimmed(env.DATA_DIR) ?? DEFAULT_DATA_DIR;
   const dataRoot = path.resolve(cwd, dataDirHint);
@@ -56,7 +61,10 @@ export function loadConfig(
     cwd,
     pickString(env.DATA_DIR, tomlString(toml, "data_dir")) ?? dataDirHint,
   );
-  const defaultHost = production ? "0.0.0.0" : "127.0.0.1";
+  // Listen address priority: GATEWAY_HOST > gateway.toml host > GATEWAY_DEFAULT_HOST > 127.0.0.1.
+  // The Docker image sets GATEWAY_DEFAULT_HOST=0.0.0.0, below the TOML, so a mounted config's host wins.
+  const defaultHost = optionalTrimmed(env.GATEWAY_DEFAULT_HOST) ?? DEFAULT_HOST;
+  warnIfHostOverridden(env, tomlString(toml, "host"), configFile, warn);
 
   return {
     cursorApiKey: requireSecret(
@@ -154,6 +162,23 @@ export function loadConfig(
       pickConfigured(env, "TRUSTED_PROXIES", tomlString(toml, "trusted_proxies"), "trusted_proxies"),
     ),
   };
+}
+
+/** GATEWAY_HOST silently beating a different gateway.toml `host` is easy to miss; say so at startup. */
+function warnIfHostOverridden(
+  env: NodeJS.ProcessEnv,
+  tomlHost: string | undefined,
+  configFile: string,
+  warn: ConfigWarning,
+): void {
+  const fromEnv = optionalTrimmed(env.GATEWAY_HOST);
+  const fromToml = optionalTrimmed(tomlHost);
+  if (fromEnv === undefined || fromToml === undefined || fromEnv === fromToml) return;
+  warn("GATEWAY_HOST overrides host in gateway.toml", {
+    env_host: fromEnv,
+    toml_host: fromToml,
+    config_file: configFile,
+  });
 }
 
 function ensureConfigFile(configFile: string, production: boolean): void {
