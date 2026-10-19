@@ -12,6 +12,7 @@ api_key_pepper = ""
 # cursor_workspace = "data/workspace"
 # park_timeout_ms = 300000
 # auth_failure_limit = 20
+# trusted_proxies = "127.0.0.1"   # reverse proxies whose X-Forwarded-For is trusted; empty = none
 
 [logs]
 # Request log retention in SQLite (admin UI). Oldest rows are deleted first.

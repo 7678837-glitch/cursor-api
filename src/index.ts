@@ -48,7 +48,12 @@ try {
   process.exit(1);
 }
 
-configureAuthThrottle(config.authFailureLimit);
+try {
+  configureAuthThrottle(config.authFailureLimit, { trustedProxies: config.trustedProxies });
+} catch (error) {
+  logError(error instanceof Error ? error.message : "invalid trusted_proxies");
+  process.exit(1);
+}
 
 const db = openDb(config.dataDir, {
   retentionDays: config.logRetentionDays,

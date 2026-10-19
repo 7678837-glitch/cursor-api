@@ -22,6 +22,8 @@ export interface AppConfig {
   parkTimeoutMs: number;
   /** Failed authentications allowed per client address per minute; 0 disables the limit. */
   authFailureLimit: number;
+  /** Reverse proxies whose X-Forwarded-For is trusted (IPs or CIDRs); empty = trust none. */
+  trustedProxies: string[];
 }
 
 export interface LogPolicy {
