@@ -4,7 +4,7 @@
 
 > 本文是英文 README 的中文译本，内容以英文版为准。
 
-**把 Cursor 模型暴露成 OpenAI 兼容接口。** 使用 OpenAI 请求格式的客户端指向 `/v1` 即可接入；在管理台签发客户端 Key、查看请求日志。OpenAI SDK、Codex、OpenCode 所用的请求格式有单元测试覆盖，但这不是用这些客户端做的端到端测试。仅部分兼容：不支持音频，Chat Completions 对 `temperature` / `top_p` / `seed` 默认返回 400。详见[客户端接入](#客户端接入)。
+**把 Cursor 模型暴露成 OpenAI 兼容接口。** 使用 OpenAI 请求格式的客户端指向 `/v1` 即可接入；在管理台签发客户端 Key、查看请求日志。单元测试覆盖标准 OpenAI 请求格式，以及 Codex、OpenCode 发送的请求形态，但这不是用这些客户端做的端到端测试。仅部分兼容：不支持音频，Chat Completions 对 `temperature` / `top_p` / `seed` 默认返回 400。详见[客户端接入](#客户端接入)。
 
 > **非官方项目。** `cursor-api` 与 Cursor（Anysphere, Inc.）和 OpenAI 均无关联，也未获其认可。文中提到这些名称仅用于说明兼容对象。
 >
@@ -170,7 +170,7 @@ Cursor SDK 每轮接收的是单个 prompt，并不原生接收 OpenAI 角色消
 
 ### Codex（`POST /v1/responses`）
 
-把 Codex 指到本网关的 `/v1`。压缩（`/compact`）可用：Responses 接受 `parallel_tool_calls: false` 和 `tools: []`（该开关会被忽略，Cursor 不区分）。Chat Completions 对 `parallel_tool_calls: false` 仍 400。
+把 Codex 指到本网关的 `/v1`。压缩（`/compact`）请求可被接受：Responses 接受 `parallel_tool_calls: false` 和 `tools: []`（该开关会被忽略，Cursor 不区分）。Chat Completions 对 `parallel_tool_calls: false` 仍 400。
 
 Responses 还会收下并忽略采样参数（`temperature`、`top_p` 等）以及未知顶层字段（`client_metadata`、`include` 等）。Codex 的 `custom` 工具（`apply_patch`）往返发 `custom_tool_call` 和自由格式 `input`。嵌套 `namespace` 工具摊平成 function。没有 name 的 hosted 工具（`web_search` 等）直接丢掉。上一轮的 assistant 正文和 `function_call` 会并成一条消息，避免工具结果 400。`previous_response_id` 续同一个 Cursor Agent。
 
@@ -257,4 +257,4 @@ GIT_COMMIT=$(git rev-parse HEAD) docker compose build
 
 ## 许可证
 
-[MIT](./LICENSE)。MIT 许可只覆盖本仓库的代码。第三方依赖适用各自的许可；其中 `@cursor/sdk` 是专有许可（© Anysphere Inc.，保留所有权利），并会被打包进发布的 Docker 镜像。
+[MIT](./LICENSE)。MIT 许可只覆盖本仓库的代码。第三方依赖适用各自的许可；其中 `@cursor/sdk` 及其平台包（如 `@cursor/sdk-linux-x64`）是专有许可（© Anysphere Inc.，保留所有权利），并会被打包进发布的 Docker 镜像。

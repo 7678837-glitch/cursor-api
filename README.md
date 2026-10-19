@@ -2,7 +2,7 @@
 
 English | [简体中文](README.zh-CN.md)
 
-**OpenAI-compatible gateway for Cursor models.** Point a client that uses the OpenAI request format at `/v1`; manage client keys and logs in a built-in admin UI. Unit tests cover the request formats used by the OpenAI SDK, Codex, and OpenCode; that is not end-to-end testing with those clients. Compatibility is partial: audio is not supported, and Chat Completions returns 400 by default for `temperature` / `top_p` / `seed`. See [Client integration](#client-integration).
+**OpenAI-compatible gateway for Cursor models.** Point a client that uses the OpenAI request format at `/v1`; manage client keys and logs in a built-in admin UI. Unit tests cover the standard OpenAI request format and the request shapes Codex and OpenCode send; that is not end-to-end testing with those clients. Compatibility is partial: audio is not supported, and Chat Completions returns 400 by default for `temperature` / `top_p` / `seed`. See [Client integration](#client-integration).
 
 > **Unofficial.** `cursor-api` is not affiliated with or endorsed by Cursor (Anysphere, Inc.) or OpenAI. Their names are used only to describe compatibility.
 >
@@ -168,7 +168,7 @@ The Cursor SDK accepts each turn as one prompt rather than native OpenAI role me
 
 ### Codex (`POST /v1/responses`)
 
-Point Codex at this gateway's `/v1`. Compaction (`/compact`) works: Responses accepts `parallel_tool_calls: false` and `tools: []` (the flag is ignored; Cursor does not distinguish it). Chat Completions still 400s `parallel_tool_calls: false`.
+Point Codex at this gateway's `/v1`. Compaction (`/compact`) requests are accepted: Responses accepts `parallel_tool_calls: false` and `tools: []` (the flag is ignored; Cursor does not distinguish it). Chat Completions still 400s `parallel_tool_calls: false`.
 
 Also accepted on Responses and ignored: sampling knobs (`temperature`, `top_p`, …) and unknown top-level fields (`client_metadata`, `include`, …). Codex `custom` tools (`apply_patch`) round-trip as `custom_tool_call` with freeform `input`. Nested `namespace` tools flatten to functions. Unnamed hosted tools (`web_search`, …) are dropped. Replayed assistant text next to `function_call` items is merged so the following tool-result round stays valid. `previous_response_id` resumes the same Cursor agent.
 
@@ -255,4 +255,4 @@ GIT_COMMIT=$(git rev-parse HEAD) docker compose build
 
 ## License
 
-[MIT](./LICENSE). The MIT license covers only the code in this repository. Third-party dependencies are under their own licenses; in particular, `@cursor/sdk` is proprietary (© Anysphere Inc., all rights reserved) and is included in the published Docker image.
+[MIT](./LICENSE). The MIT license covers only the code in this repository. Third-party dependencies are under their own licenses; in particular, `@cursor/sdk` and its platform packages (e.g. `@cursor/sdk-linux-x64`) are proprietary (© Anysphere Inc., all rights reserved) and are included in the published Docker image.
