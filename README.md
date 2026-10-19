@@ -1,14 +1,16 @@
 # cursor-api
 
-**OpenAI-compatible gateway for Cursor models.** Point OpenAI SDK, Codex, or OpenCode clients at `/v1`; manage client keys and logs in a built-in admin UI. Compatibility is partial: audio is not supported, and Chat Completions returns 400 for `temperature` / `top_p` / `seed`. See [Client integration](#client-integration).
+English | [简体中文](README.zh-CN.md)
+
+**OpenAI-compatible gateway for Cursor models.** Point a client that uses the OpenAI request format at `/v1`; manage client keys and logs in a built-in admin UI. Unit tests cover the request formats used by the OpenAI SDK, Codex, and OpenCode; that is not end-to-end testing with those clients. Compatibility is partial: audio is not supported, and Chat Completions returns 400 by default for `temperature` / `top_p` / `seed`. See [Client integration](#client-integration).
 
 > **Unofficial.** `cursor-api` is not affiliated with or endorsed by Cursor (Anysphere, Inc.) or OpenAI. Their names are used only to describe compatibility.
 >
 > **Terms of Service risk:** using this gateway may violate Cursor's [Terms of Service](https://cursor.com/terms-of-service) or [Acceptable Use Policy](https://cursor.com/acceptable-use-policy), which can lead to suspension or termination of your Cursor account. You use it at your own risk.
 >
-> **Usage:** use only your own Cursor API key, for local personal use. Do not share a key among multiple people or host the gateway as a public service. Follow Cursor's terms when using it.
+> **Usage:** use only your own Cursor API key (the upstream `cursor_api_key`, not the `cgk_` client keys the gateway issues), for local personal use. Do not share your Cursor API key among multiple people or host the gateway as a public service. Follow Cursor's terms when using it.
 
-**Chinese:** [`README.zh-CN.md`](./README.zh-CN.md) · **Changelog:** [`CHANGELOG.md`](./CHANGELOG.md)
+**Changelog:** [`CHANGELOG.md`](./CHANGELOG.md)
 
 **You need:** [Docker Compose](https://docs.docker.com/compose/) and a [Cursor User API Key](https://cursor.com/settings).
 
@@ -253,4 +255,4 @@ GIT_COMMIT=$(git rev-parse HEAD) docker compose build
 
 ## License
 
-[MIT](./LICENSE)
+[MIT](./LICENSE). The MIT license covers only the code in this repository. Third-party dependencies are under their own licenses; in particular, `@cursor/sdk` is proprietary (© Anysphere Inc., all rights reserved) and is included in the published Docker image.
