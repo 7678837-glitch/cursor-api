@@ -1,6 +1,12 @@
 # cursor-api
 
-**OpenAI-compatible gateway for Cursor models.** Point any OpenAI client at `/v1`; manage client keys and logs in a built-in admin UI.
+**OpenAI-compatible gateway for Cursor models.** Point OpenAI SDK, Codex, or OpenCode clients at `/v1`; manage client keys and logs in a built-in admin UI. Compatibility is partial: audio is not supported, and Chat Completions returns 400 for `temperature` / `top_p` / `seed`. See [Client integration](#client-integration).
+
+> **Unofficial.** `cursor-api` is not affiliated with or endorsed by Cursor (Anysphere, Inc.) or OpenAI. Their names are used only to describe compatibility.
+>
+> **Terms of Service risk:** using this gateway may violate Cursor's [Terms of Service](https://cursor.com/terms-of-service) or [Acceptable Use Policy](https://cursor.com/acceptable-use-policy), which can lead to suspension or termination of your Cursor account. You use it at your own risk.
+>
+> **Usage:** use only your own Cursor API key, for local personal use. Do not share a key among multiple people or host the gateway as a public service. Follow Cursor's terms when using it.
 
 **Chinese:** [`README.zh-CN.md`](./README.zh-CN.md) · **Changelog:** [`CHANGELOG.md`](./CHANGELOG.md)
 
@@ -247,4 +253,4 @@ GIT_COMMIT=$(git rev-parse HEAD) docker compose build
 
 ## License
 
-MIT — see [`package.json`](./package.json).
+[MIT](./LICENSE)

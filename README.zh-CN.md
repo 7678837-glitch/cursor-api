@@ -1,6 +1,12 @@
 # cursor-api
 
-**把 Cursor 模型暴露成 OpenAI 兼容接口。** 任意 OpenAI 客户端指向 `/v1`；在管理台签发客户端 Key、查看请求日志。
+**把 Cursor 模型暴露成 OpenAI 兼容接口。** OpenAI SDK、Codex、OpenCode 等客户端指向 `/v1` 即可接入；在管理台签发客户端 Key、查看请求日志。兼容是部分兼容：不支持音频，Chat Completions 对 `temperature` / `top_p` / `seed` 返回 400。详见[客户端接入](#客户端接入)。
+
+> **非官方项目。** `cursor-api` 与 Cursor（Anysphere, Inc.）和 OpenAI 均无关联，也未获其认可。文中提到这些名称仅用于说明兼容对象。
+>
+> **服务条款风险：** 使用本网关可能违反 Cursor 的[服务条款](https://cursor.com/terms-of-service)或[可接受使用政策](https://cursor.com/acceptable-use-policy)，可能导致 Cursor 账号被暂停或终止。使用风险由你自行承担。
+>
+> **使用范围：** 只使用你自己的 Cursor API Key，仅供本机个人使用。不要多人共用同一个 Key，也不要把网关作为公共服务对外提供。使用时请遵守 Cursor 的条款。
 
 **English:** [`README.md`](./README.md) · **变更记录：** [`CHANGELOG.md`](./CHANGELOG.md)
 
@@ -247,4 +253,4 @@ GIT_COMMIT=$(git rev-parse HEAD) docker compose build
 
 ## 许可证
 
-MIT — 见 [`package.json`](./package.json)。
+[MIT](./LICENSE)
