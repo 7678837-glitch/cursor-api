@@ -12,6 +12,13 @@ export class GatewayError extends Error {
     this.code = code;
     this.openaiType = openaiType;
   }
+
+  /** `Retry-After` header for errors that carry `retryAfterSeconds` (429 responses). */
+  static retryAfterHeaders(error: unknown): Record<string, string> {
+    return error instanceof GatewayError && error.retryAfterSeconds !== undefined
+      ? { "retry-after": String(error.retryAfterSeconds) }
+      : {};
+  }
 }
 
 export function invalidRequest(message: string, code = "invalid_request"): GatewayError {

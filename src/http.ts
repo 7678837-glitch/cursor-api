@@ -36,18 +36,12 @@ export function sendOpenAiError(
   sendJson(res, status, toOpenAiErrorBody(error, requestId), {
     ...(requestId ? { "x-request-id": requestId } : {}),
     ...extraHeaders,
-    ...retryAfterHeader(error),
+    ...GatewayError.retryAfterHeaders(error),
   });
 }
 
-function retryAfterHeader(error: unknown): Record<string, string> {
-  return error instanceof GatewayError && error.retryAfterSeconds !== undefined
-    ? { "retry-after": String(error.retryAfterSeconds) }
-    : {};
-}
-
 export function sendSimpleError(res: ServerResponse, error: unknown): void {
-  sendJson(res, httpStatusOf(error), toSimpleErrorBody(error), retryAfterHeader(error));
+  sendJson(res, httpStatusOf(error), toSimpleErrorBody(error), GatewayError.retryAfterHeaders(error));
 }
 
 export function readBearer(req: IncomingMessage): string | null {
