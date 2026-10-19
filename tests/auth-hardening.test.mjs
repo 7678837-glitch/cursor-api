@@ -17,7 +17,7 @@ test("throttle blocks an address after the limit until the window passes", () =>
   assert.equal(new AuthFailureThrottle(0, 60_000).enabled, false);
 });
 
-test("gateway answers 429 after repeated bad keys, for client and admin routes alike", { timeout: 20_000 }, async () => {
+test("gateway backs off repeated bad client keys without locking out valid keys or the admin", { timeout: 20_000 }, async () => {
   const gateway = await startFakeGateway({ AUTH_FAILURE_LIMIT: "3" });
   try {
     const models = (key) => fetch(`${gateway.baseUrl}/v1/models`, { headers: { authorization: `Bearer ${key}` } });
@@ -25,11 +25,12 @@ test("gateway answers 429 after repeated bad keys, for client and admin routes a
     for (let i = 0; i < 3; i += 1) assert.equal((await models("cgk_wrong")).status, 401);
     const blocked = await models("cgk_wrong");
     assert.equal(blocked.status, 429);
+    assert.ok(Number(blocked.headers.get("retry-after")) >= 1);
     assert.match((await blocked.json()).error.message, /failed authentication/);
-    // Even the correct key waits out the window from this address.
-    assert.equal((await models(CLIENT_KEY)).status, 429);
+    // A valid client key is never throttled, and client failures do not count against the admin bucket.
+    assert.equal((await models(CLIENT_KEY)).status, 200);
     const admin = await fetch(`${gateway.baseUrl}/admin/api/overview`, { headers: { authorization: "Bearer it-admin-key" } });
-    assert.equal(admin.status, 429);
+    assert.equal(admin.status, 200);
   } finally {
     await gateway.stop();
   }
