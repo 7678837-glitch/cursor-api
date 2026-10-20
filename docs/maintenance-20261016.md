@@ -50,6 +50,10 @@ Node 最低版本 22.13；官方 Docker 镜像使用 Node 22、`linux/amd64`，�
 
 ## 验证边界
 
-已执行的定向验证包括 Claude Code HTTP 工具往返、默认关闭 token 估算及显式估算模式、Anthropic 限流头；依赖审计返回 0 个已知漏洞。Key 池修复前的 4 项失败回归覆盖旧 SQLite 迁移、三协议模型选择、增量会话归属和停车续接计数。
+- `npm run typecheck`、`git diff --check` 通过；全量 `npm test`：131 项通过，0 失败。
+- Key 池的旧 SQLite 迁移、三协议模型选择、增量会话归属、停车续接计数先复现 4 项失败；修复后通过。未知模型流式请求先复现错误的 200，修复后各协议均在 SSE 前返回 404。
+- `npm audit`：0 个已知漏洞。
+- amd64 镜像无缓存构建通过；Node 22 容器实际启动后，Docker HEALTHCHECK 为 healthy，`/health` 版本为 `20261020.1`、schema 为 8，commit 与构建注入值一致；未认证 API 返回 401，管理页防嵌入头生效。
+- 同一镜像挂载模拟 SDK 后，Chat、Responses、Messages 核心请求均返回 200，默认 token 估算关闭返回 404。临时容器已清理。
 
-最终测试及 CI 结果以整合 PR 的检查记录为准。模型行为使用模拟 SDK，数据库测试使用真实临时 SQLite。没有据此声称生产环境已更新或真实 Cursor 调用已验证。
+远端 Node 矩阵结果以整合 PR 的 CI 检查为准。模型行为使用模拟 SDK，数据库测试使用真实临时 SQLite。真实 Cursor 上游、实际多账号权限及生产部署状态未验证。

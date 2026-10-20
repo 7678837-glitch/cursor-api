@@ -119,6 +119,8 @@ detailed = false
 | `auth_failure_limit` | Failed authentications allowed per client address in any 60-second sliding window (default **20**, max 1000; `0` turns it off). Admin and client keys are counted separately. **Admin:** once the limit is reached, every admin request from that address gets `429` with `Retry-After` until the window clears, even with the correct key. **Client keys:** a valid key is never throttled; only further wrong keys get `429` + `Retry-After` instead of `401`. Requests without any key are not counted. IPv6 addresses are grouped per /64 |
 | `trusted_proxies` | Comma-separated IPs or CIDRs of your reverse proxies, e.g. `"127.0.0.1, 172.18.0.0/16"` (env `TRUSTED_PROXIES`). Default empty: the TCP peer address is the client address and `X-Forwarded-For` is ignored. When the peer is listed, the client address is the right-most `X-Forwarded-For` entry that is not a listed proxy. Behind a proxy without this setting, all clients share the proxy's address for `auth_failure_limit`. Only list proxies that overwrite or append `X-Forwarded-For` (nginx `proxy_add_x_forwarded_for`, Caddy default) |
 
+Existing conversations stay bound to the Cursor key that created them, including after a restart. SQLite stores only its fingerprint. Removing that key causes an incremental continuation to fail explicitly; resend the full history to replay it. Legacy mappings without an owner require full history when multiple keys are configured.
+
 ```bash
 chmod 600 data/config/gateway.toml
 ```
