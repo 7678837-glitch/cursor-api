@@ -466,7 +466,12 @@ async function runClaimedChatTurn(
     parked.sink = options.sink;
     parked.parkTimeoutMs = options.parkTimeoutMs ?? parked.parkTimeoutMs;
     applyToolResults(parked, turn.results);
-    await options.claimOutput?.();
+    try {
+      await options.claimOutput?.();
+    } catch (error) {
+      await dropSession(parked);
+      throw error;
+    }
     parked.lastRequestMessages = options.request.messages;
     indexSession(parked, options.apiKeyId, hashMessages(options.request.messages));
     const operation = async (): Promise<CursorChatResult> =>

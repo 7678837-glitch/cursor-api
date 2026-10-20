@@ -165,3 +165,30 @@ test("when every session is running, new work gets 503 instead of unbounded grow
     await gateway.stop();
   }
 });
+
+test("failed stream setup after tool results disposes the agent and releases session capacity", () => {
+  execFileSync(process.execPath, ["--import", new URL("./fixtures/register-fake-sdk.mjs", import.meta.url).pathname,
+    "--input-type=module", "-e", `
+      import assert from 'node:assert/strict';
+      import { calls } from './tests/fixtures/fake-cursor-sdk.mjs';
+      import { runChatTurn, configureSessionLimits, sessionStats } from './dist/session.js';
+      configureSessionLimits({ maxLiveSessions: 1 });
+      const messages = [{ role: 'user', content: 'CALL_TOOL' }];
+      const options = {
+        apiKey: 'good-key', apiKeyId: 'client', workspaceDir: process.cwd(),
+        abortSignal: new AbortController().signal,
+        request: { model: 'fake-model', conversation_id: 'stream-failure', messages,
+          tools: [{ type: 'function', function: { name: 'lookup', parameters: { type: 'object', properties: {} } } }] },
+      };
+      const first = await runChatTurn(options);
+      const call = first.tool_calls[0];
+      await assert.rejects(runChatTurn({ ...options,
+        onClaimed: async () => { throw new Error('stream setup failed'); },
+        request: { ...options.request, stream: true, messages: [...messages,
+          { role: 'assistant', content: '', tool_calls: [call] },
+          { role: 'tool', tool_call_id: call.id, content: '42' }] },
+      }), /stream setup failed/);
+      assert.equal(sessionStats().live, 0);
+      assert.equal(calls.disposed.length, 1);
+    `], { cwd: join(import.meta.dirname, ".."), stdio: "pipe" });
+});
