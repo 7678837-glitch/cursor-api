@@ -35,7 +35,7 @@ import {
   newAnthropicMessageId,
   parseAnthropicMessagesRequest,
 } from "./anthropic.js";
-import { logError, logInfo, setSystemLogWriter, truncateUtf8 } from "./log.js";
+import { logError, logInfo, redactValue, setSystemLogWriter, truncateUtf8 } from "./log.js";
 import {
   encodeNonStreamCompletion,
   encodeStreamChunk,
@@ -975,7 +975,7 @@ function rememberResponseChain(apiKeyId: string, resumeId: string | undefined, r
 }
 
 function buildRequestDetail(parsed: ParsedChatRequest): string {
-  return JSON.stringify({
+  return stringifyRedacted({
     model: parsed.model,
     stream: parsed.stream,
     messages: parsed.messages,
@@ -990,7 +990,7 @@ function buildRequestDetail(parsed: ParsedChatRequest): string {
 
 function snapshotIncomingBody(body: unknown): string | null {
   if (!config.logDetailed) return null;
-  return truncateUtf8(JSON.stringify(body), config.logDetailedMaxBytes);
+  return truncateUtf8(stringifyRedacted(body), config.logDetailedMaxBytes);
 }
 
 function snapshotResponseDetail(
@@ -1005,7 +1005,7 @@ function snapshotResponseDetail(
     );
   }
   if (!errorCode) return null;
-  return JSON.stringify({
+  return stringifyRedacted({
     status: "error",
     error_code: errorCode,
     ...(errorMessage ? { error_message: errorMessage } : {}),
@@ -1017,7 +1017,7 @@ function buildResponseDetail(
   errorCode: string | null,
   errorMessage: string | null,
 ): string {
-  return JSON.stringify({
+  return stringifyRedacted({
     status: result?.status ?? (errorCode ? "error" : "unknown"),
     text: result?.text ?? "",
     usage: result?.usageKnown ? result.usage : null,
@@ -1027,6 +1027,11 @@ function buildResponseDetail(
     error_code: errorCode,
     ...(errorMessage ? { error_message: errorMessage } : {}),
   });
+}
+
+/** Redact before truncating so a cut can't leave a partial secret that the patterns no longer match. */
+function stringifyRedacted(value: unknown): string {
+  return JSON.stringify(redactValue(value));
 }
 
 function peekModel(body: unknown): string {
