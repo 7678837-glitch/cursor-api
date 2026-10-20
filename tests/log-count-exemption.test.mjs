@@ -340,3 +340,37 @@ test("Elliot's 17 count-phrase variants (and the long one) mask the whole value"
     assert.equal(persisted.fields.error_message, REDACTED, `${name}: ${value}`);
   }
 });
+
+// ---- r3 review R3-5: tests for the three surviving mutants (M06, M11, M14) ----
+
+test("the cut backs off to a word break, so a secret cut short of its rule's minimum does not survive", () => {
+  // "x " * 8185 + "Bearer " puts the secret at 16 377, so a plain cut at 16 384 keeps only 7 of its
+  // characters, one short of the Bearer rule's 8. Backing off to the space drops the fragment.
+  const value = `${"x ".repeat(8_185)}Bearer abcdefghijklmnopqrstuvwxyz`;
+  const field = sanitizeFields({ detail: value }).detail;
+  assert.ok(field.endsWith("Bearer …[truncated]"), field.slice(-40));
+  assert.ok(!/abcd/.test(field), field.slice(-40));
+  const { stdout, persisted } = capture(() => logError(value));
+  assert.ok(!/abcd/.test(stdout.message), stdout.message.slice(-40));
+  assert.ok(!/abcd/.test(persisted.message), persisted.message.slice(-40));
+});
+
+test("a usage-detail key with an array value is masked", () => {
+  for (const name of ["prompt_tokens_details", "completion_tokens_details", "input_tokens_details", "outputTokensDetails"]) {
+    assert.equal(sanitizeFields({ [name]: [S] })[name], REDACTED, name);
+    assert.equal(sanitizeFields({ [name]: [{ cached_tokens: 1 }] })[name], REDACTED, name);
+  }
+});
+
+test("cookie and credential in a field value mask the whole value", () => {
+  for (const value of [
+    `credential ${S}`,
+    `the credentials are ${S}`,
+    `Cookie: a=b; session=${S}`,
+    `set-cookie session ${S}`,
+  ]) {
+    const { stdout, persisted } = capture(() => logInfo("m", { detail: value }));
+    assert.equal(stdout.detail, REDACTED, value);
+    assert.equal(persisted.fields.detail, REDACTED, value);
+  }
+});
