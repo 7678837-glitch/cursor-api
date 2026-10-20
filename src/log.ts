@@ -1,4 +1,27 @@
-const SENSITIVE = /api[_-]?key|authorization|pepper|secret|token|password/i;
+const SENSITIVE_KEY = /api[_-]?key|access[_-]?key|authorization|cookie|pepper|secret|password|passwd|credential|(^|[_-])token($|[_-](value|secret))|bearer/i;
+const IDENTIFIER_SUFFIX = /[_-](id|ids|prefix|name|count|source)$/i;
+const SECRET_PATTERNS: RegExp[] = [
+  /\b(Bearer|Basic)\s+[A-Za-z0-9._~+/=-]{8,}/gi,
+  /\bcgk_[A-Za-z0-9_-]{6,}/g,
+  /\b(sk|key|crsr|cursor|user)[-_][A-Za-z0-9_-]{20,}/g,
+  /\b(api[_-]?key|access[_-]?key|token|secret|password|pepper)(["']?\s*[:=]\s*["']?)[^\s"',;&]{6,}/gi,
+];
+
+function isSensitiveKey(key: string): boolean {
+  return SENSITIVE_KEY.test(key) && !IDENTIFIER_SUFFIX.test(key);
+}
+
+export function scrubSecrets(text: string): string {
+  let out = text;
+  for (const pattern of SECRET_PATTERNS) {
+    out = out.replace(pattern, (match, ...groups) => {
+      if (/^(Bearer|Basic)\s/i.test(match)) return `${String(groups[0])} [redacted]`;
+      if (typeof groups[1] === "string" && /[:=]/.test(groups[1])) return `${String(groups[0])}${groups[1]}[redacted]`;
+      return "[redacted]";
+    });
+  }
+  return out;
+}
 
 export type SystemLogEntry = {
   level: "info" | "error";
@@ -31,7 +54,7 @@ function persist(level: "info" | "error", message: string, fields?: Record<strin
   try {
     writer({
       level,
-      message,
+      message: scrubSecrets(message),
       fields: fields === undefined ? null : sanitizeFields(fields),
     });
   } catch {
@@ -58,24 +81,27 @@ export function truncateUtf8(text: string, maxBytes: number): string {
   return buf.subarray(0, cut).toString("utf8") + suffix;
 }
 
-function sanitizeFields(fields: Record<string, unknown>): Record<string, unknown> {
+export function sanitizeFields(fields: Record<string, unknown>): Record<string, unknown> {
   const safe: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(fields)) {
-    if (SENSITIVE.test(key)) {
+    if (isSensitiveKey(key)) {
       safe[key] = "[redacted]";
       continue;
     }
-    if (typeof value === "string" && SENSITIVE.test(value)) {
-      safe[key] = "[redacted]";
-      continue;
-    }
-    safe[key] = value;
+    safe[key] = typeof value === "string" ? scrubSecrets(value) : sanitizeValue(value);
   }
   return safe;
 }
 
 function format(level: string, message: string, fields?: Record<string, unknown>): string {
-  const safe: Record<string, unknown> = { level, message, ts: new Date().toISOString() };
+  const safe: Record<string, unknown> = { level, message: scrubSecrets(message), ts: new Date().toISOString() };
   if (fields) Object.assign(safe, sanitizeFields(fields));
   return JSON.stringify(safe);
+}
+
+function sanitizeValue(value: unknown): unknown {
+  if (typeof value === "string") return scrubSecrets(value);
+  if (Array.isArray(value)) return value.map(sanitizeValue);
+  if (value && typeof value === "object") return sanitizeFields(value as Record<string, unknown>);
+  return value;
 }

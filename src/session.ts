@@ -23,9 +23,9 @@ import {
   resumeLocalChatAgent,
   toChatUsage,
 } from "./cursor.js";
-import { getConversationAgentId, upsertConversation } from "./db.js";
+import { getConversationAgentId, pruneConversations, upsertConversation } from "./db.js";
 import { conversationBusyError, GatewayError, invalidRequest } from "./errors.js";
-import { logInfo } from "./log.js";
+import { logError, logInfo } from "./log.js";
 import { imagesOfLastUser, renderTranscript } from "./openai.js";
 
 const DEFAULT_PARK_TIMEOUT_MS = 5 * 60 * 1000;
@@ -73,9 +73,141 @@ interface LiveSession {
   lastRequestMessages: ParsedChatMessage[];
   conversationId?: string;
   parkTimeoutMs: number;
+  createdAt: number;
+  lastActiveAt: number;
 }
 
 const sessions = new Map<string, LiveSession>();
+/** Every session that owns a Cursor agent, once per session (`sessions` indexes several keys each). */
+const liveSessions = new Set<LiveSession>();
+const sessionCounters = { evicted: 0, expired: 0, rejected: 0, conversationsPruned: 0 };
+let maxLiveSessions = 256;
+let pendingSessionCreates = 0;
+
+export interface SessionStats {
+  live: number;
+  parked: number;
+  running: number;
+  max: number;
+  evicted_total: number;
+  expired_total: number;
+  rejected_total: number;
+  conversations_pruned_total: number;
+}
+
+export function configureSessionLimits(options: { maxLiveSessions: number }): void {
+  maxLiveSessions = Math.max(1, Math.floor(options.maxLiveSessions));
+}
+
+export function sessionStats(): SessionStats {
+  let parked = 0;
+  for (const session of liveSessions) {
+    if (isAwaitingClient(session)) parked += 1;
+  }
+  return {
+    live: liveSessions.size,
+    parked,
+    running: liveSessions.size - parked,
+    max: maxLiveSessions,
+    evicted_total: sessionCounters.evicted,
+    expired_total: sessionCounters.expired,
+    rejected_total: sessionCounters.rejected,
+    conversations_pruned_total: sessionCounters.conversationsPruned,
+  };
+}
+
+function isAwaitingClient(session: LiveSession): boolean {
+  return session.awaitingClient && session.parks.size > 0;
+}
+
+/**
+ * Makes room for one more session. At the cap, the least recently active
+ * session that is only waiting for client tool results is evicted (its client
+ * can still continue via transcript replay). If every session is actively
+ * running, the request is refused with 503 instead of growing without bound.
+ */
+async function ensureSessionCapacity(apiKeyId: string): Promise<void> {
+  while (liveSessions.size + pendingSessionCreates >= maxLiveSessions) {
+    let victim: LiveSession | undefined;
+    for (const session of liveSessions) {
+      if (!isAwaitingClient(session)) continue;
+      if (!victim || session.lastActiveAt < victim.lastActiveAt) victim = session;
+    }
+    if (!victim) {
+      sessionCounters.rejected += 1;
+      logInfo("session limit reached", { api_key_id: apiKeyId, live: liveSessions.size, max: maxLiveSessions });
+      throw new GatewayError(
+        503,
+        "too_many_sessions",
+        "Too many active Cursor sessions; retry shortly",
+        "server_error",
+      );
+    }
+    sessionCounters.evicted += 1;
+    logInfo("evicted parked session", {
+      api_key_id: victim.apiKeyId,
+      idle_ms: Date.now() - victim.lastActiveAt,
+      live: liveSessions.size,
+      max: maxLiveSessions,
+    });
+    await dropSession(victim);
+  }
+  pendingSessionCreates += 1;
+}
+
+async function reserveSessionCapacity(apiKeyId: string): Promise<() => void> {
+  await ensureSessionCapacity(apiKeyId);
+  let released = false;
+  return (): void => {
+    if (released) return;
+    released = true;
+    pendingSessionCreates -= 1;
+  };
+}
+
+/**
+ * Periodic safety net: drops parked sessions idle past twice their park
+ * timeout (their own timer should already have fired) and prunes stale
+ * conversation mappings from SQLite.
+ */
+export async function sweepSessions(options: {
+  now?: number;
+  db?: DatabaseSync;
+  conversationTtlDays?: number;
+}): Promise<{ expired: number; conversationsPruned: number }> {
+  const now = options.now ?? Date.now();
+  let expired = 0;
+  for (const session of [...liveSessions]) {
+    if (!isAwaitingClient(session)) continue;
+    if (now - session.lastActiveAt <= session.parkTimeoutMs * 2) continue;
+    expired += 1;
+    await dropSession(session);
+  }
+  sessionCounters.expired += expired;
+  let conversationsPruned = 0;
+  if (options.db && options.conversationTtlDays !== undefined) {
+    const cutoff = new Date(now - options.conversationTtlDays * 86_400_000).toISOString();
+    conversationsPruned = pruneConversations(options.db, cutoff);
+    sessionCounters.conversationsPruned += conversationsPruned;
+  }
+  if (expired > 0 || conversationsPruned > 0) {
+    logInfo("session sweep", { expired, conversations_pruned: conversationsPruned, live: liveSessions.size });
+  }
+  return { expired, conversationsPruned };
+}
+
+export function startSessionSweeper(options: {
+  db: DatabaseSync;
+  conversationTtlDays: number;
+  intervalMs?: number;
+}): () => void {
+  const timer = setInterval(() => {
+    void sweepSessions(options).catch((error) => logError("session sweep failed", { error: error instanceof Error ? error.message : String(error) }));
+  }, options.intervalMs ?? 60_000);
+  timer.unref();
+  void sweepSessions(options).catch((error) => logError("session sweep failed", { error: error instanceof Error ? error.message : String(error) }));
+  return () => clearInterval(timer);
+}
 const activeConversationRequests = new Map<string, symbol>();
 
 interface RunChatTurnOptions {
@@ -192,12 +324,14 @@ export function resolveTurnAction(input: {
 
 export function resolveParkedRoute(input: {
   conversationId?: string;
+  conversationIdGenerated?: boolean;
   hasConversationParks: boolean;
   hasStemParks: boolean;
 }): "conversation" | "stem" | undefined {
-  if (input.conversationId) {
+  if (input.conversationId && !input.conversationIdGenerated) {
     return input.hasConversationParks ? "conversation" : undefined;
   }
+  if (input.conversationId && input.hasConversationParks) return "conversation";
   return input.hasStemParks ? "stem" : undefined;
 }
 
@@ -291,6 +425,7 @@ async function runClaimedChatTurn(
   const byConv = convKey ? sessions.get(convKey) : undefined;
   const parkedRoute = resolveParkedRoute({
     conversationId,
+    conversationIdGenerated: options.request.conversation_id_generated,
     hasConversationParks: Boolean(byConv && byConv.parks.size > 0),
     hasStemParks: Boolean(byStem && byStem.parks.size > 0),
   });
@@ -311,12 +446,12 @@ async function runClaimedChatTurn(
   });
 
   if (action === "continue_park" && turn.kind === "tool_results" && parked) {
+    rememberConversation(parked, options);
     parked.sink = options.sink;
     parked.parkTimeoutMs = options.parkTimeoutMs ?? parked.parkTimeoutMs;
     applyToolResults(parked, turn.results);
     parked.lastRequestMessages = options.request.messages;
     indexSession(parked, options.apiKeyId, hashMessages(options.request.messages));
-    if (convKey) indexSession(parked, options.apiKeyId, `conv:${conversationId}`);
     return await continueRun(parked, options.abortSignal);
   }
 
@@ -356,6 +491,7 @@ async function resumeUserTurn(
     return await startNewSession(turn, options);
   }
   const model = await resolveChatModel(options.apiKey, options.request);
+  const releaseCapacity = await reserveSessionCapacity(options.apiKeyId);
   const session = emptySession(options, model.params);
   const customTools = buildCustomTools(session, options.request.tools, options.request.tool_choice);
   try {
@@ -367,6 +503,7 @@ async function resumeUserTurn(
       customTools,
     });
   } catch (error) {
+    releaseCapacity();
     logInfo("conversation resume failed, starting new", {
       api_key_id: options.apiKeyId,
       conversation_id: options.request.conversation_id ?? null,
@@ -380,7 +517,14 @@ async function resumeUserTurn(
     conversation_id: options.request.conversation_id ?? null,
     agent_id: storedAgentId,
   });
-  rememberConversation(session, options);
+  try {
+    rememberConversation(session, options);
+  } catch (error) {
+    await dropSession(session);
+    throw error;
+  } finally {
+    releaseCapacity();
+  }
   return await sendOnSession(session, turn.user.content, options);
 }
 
@@ -416,6 +560,7 @@ async function startAgentSession(
   },
 ): Promise<CursorChatResult> {
   const model = await resolveChatModel(options.apiKey, options.request);
+  const releaseCapacity = await reserveSessionCapacity(options.apiKeyId);
   const session = emptySession(options, model.params);
   const customTools = buildCustomTools(session, options.request.tools, options.request.tool_choice);
   try {
@@ -426,9 +571,17 @@ async function startAgentSession(
       customTools,
     });
   } catch (error) {
+    releaseCapacity();
     throw mapCursorError(error);
   }
-  rememberConversation(session, options);
+  try {
+    rememberConversation(session, options);
+  } catch (error) {
+    await dropSession(session);
+    throw error;
+  } finally {
+    releaseCapacity();
+  }
   return await sendOnSession(session, prompt, options);
 }
 
@@ -461,6 +614,8 @@ function emptySession(
     lastRequestMessages: options.request.messages,
     conversationId: options.request.conversation_id,
     parkTimeoutMs: options.parkTimeoutMs ?? DEFAULT_PARK_TIMEOUT_MS,
+    createdAt: Date.now(),
+    lastActiveAt: Date.now(),
   };
 }
 
@@ -494,6 +649,8 @@ async function sendOnSession(
   session.batchReady = new Deferred<OpenAiToolCall[]>();
   session.sink = options.sink;
   session.lastRequestMessages = options.request.messages;
+  session.lastActiveAt = Date.now();
+  liveSessions.add(session);
   const customTools = buildCustomTools(session, options.request.tools, options.request.tool_choice);
   const images = imagesOfLastUser(options.request.messages);
 
@@ -525,6 +682,7 @@ export async function continueRun(
   session.awaitingClient = false;
   session.lastFlushed = [];
   session.batchReady = new Deferred<OpenAiToolCall[]>();
+  session.lastActiveAt = Date.now();
   clearParkTimer(session);
   bindAbort(session, abortSignal);
   if (session.batch.length > 0) {
@@ -552,6 +710,7 @@ export async function raceTurn(session: LiveSession): Promise<CursorChatResult> 
     throw error;
   }
   if (outcome.kind === "tools") {
+    session.lastActiveAt = Date.now();
     armParkTimeout(session);
     indexSession(
       session,
@@ -722,6 +881,7 @@ async function settleRun(session: LiveSession, abortSignal: AbortSignal): Promis
     }
     if (result.status === "error") {
       return {
+        ...(result.error ? { error: { message: result.error.message, code: result.error.code } } : {}),
         text: session.text,
         usage: toChatUsage(rawUsage),
         usageKnown: rawUsage !== undefined,
@@ -804,6 +964,7 @@ function indexSession(session: LiveSession, apiKeyId: string, hash: string): voi
 }
 
 async function dropSession(session: LiveSession): Promise<void> {
+  liveSessions.delete(session);
   clearParkTimer(session);
   if (session.flushTimer) clearTimeout(session.flushTimer);
   for (const key of session.indexKeys) {

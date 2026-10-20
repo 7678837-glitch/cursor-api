@@ -11,6 +11,10 @@ const DEFAULT_LOG_DETAILED = false;
 const DEFAULT_LOG_DETAILED_MAX_BYTES = 65_536;
 const DEFAULT_LOG_MAX_DETAIL_BYTES = 268_435_456; // 256 MiB across all detail columns
 const DEFAULT_PARK_TIMEOUT_MS = 300_000;
+const DEFAULT_SSE_KEEPALIVE_MS = 15_000;
+const DEFAULT_AUTH_FAILURE_LIMIT = 20;
+const DEFAULT_MAX_LIVE_SESSIONS = 256;
+const DEFAULT_CONVERSATION_TTL_DAYS = 30;
 const CONFIG_FILE_NAME = "gateway.toml";
 
 const EMPTY_CONFIG_TEMPLATE = `# cursor-api configuration (auto-created in container)
@@ -24,6 +28,12 @@ admin_access_key = ""
 api_key_pepper = ""
 
 # park_timeout_ms = 300000
+# max_live_sessions = 256        # running + parked Cursor sessions kept in memory
+# conversation_ttl_days = 30     # drop conversation_id mappings unused this long
+# ignore_sampling_params = false  # drop unsupported Chat Completions sampling knobs
+# sse_keepalive_ms = 15000       # 0 disables SSE comment heartbeats
+# auth_failure_limit = 20        # failed auth attempts per address per minute; 0 = off
+# cors_allow_origins = "*"       # comma-separated HTTP origins; empty disables CORS
 
 [logs]
 retention_days = 7
@@ -57,6 +67,7 @@ export function loadConfig(
   const defaultHost = production ? "0.0.0.0" : "127.0.0.1";
 
   return {
+    corsAllowOrigins: parseCorsOrigins(env.CORS_ALLOW_ORIGINS ?? tomlString(toml, "cors_allow_origins") ?? "*"),
     cursorApiKey: requireSecret(
       env,
       "CURSOR_API_KEY",
@@ -129,6 +140,33 @@ export function loadConfig(
       ),
       DEFAULT_LOG_MAX_DETAIL_BYTES,
       { min: 1_048_576, max: 10_737_418_240 },
+    ),
+    ignoreSamplingParams: parseBoolean(
+      pickConfigured(env, "IGNORE_SAMPLING_PARAMS", boolToString(tomlBool(toml, "ignore_sampling_params")), "ignore_sampling_params"),
+      false,
+    ),
+    sseKeepaliveMs: parseOptionalInterval(
+      pickConfigured(env, "SSE_KEEPALIVE_MS", intToString(tomlInt(toml, "sse_keepalive_ms")), "sse_keepalive_ms"),
+      DEFAULT_SSE_KEEPALIVE_MS,
+      { min: 1_000, max: 600_000 },
+    ),
+    authFailureLimit: parseAuthFailureLimit(
+      pickConfigured(env, "AUTH_FAILURE_LIMIT", intToString(tomlInt(toml, "auth_failure_limit")), "auth_failure_limit"),
+    ),
+    maxLiveSessions: parseBoundedInt(
+      pickConfigured(env, "MAX_LIVE_SESSIONS", intToString(tomlInt(toml, "max_live_sessions")), "max_live_sessions"),
+      DEFAULT_MAX_LIVE_SESSIONS,
+      { min: 1, max: 100_000 },
+    ),
+    conversationTtlDays: parseBoundedInt(
+      pickConfigured(
+        env,
+        "CONVERSATION_TTL_DAYS",
+        intToString(tomlInt(toml, "conversation_ttl_days")),
+        "conversation_ttl_days",
+      ),
+      DEFAULT_CONVERSATION_TTL_DAYS,
+      { min: 1, max: 3650 },
     ),
     parkTimeoutMs: parseBoundedInt(
       pickConfigured(
@@ -232,6 +270,18 @@ function parseBoundedInt(
     );
   }
   return parsed;
+}
+
+function parseOptionalInterval(
+  configured: { value: string | undefined; source: string }, fallback: number, bounds: { min: number; max: number },
+): number {
+  if (optionalTrimmed(configured.value) === "0") return 0;
+  return parseBoundedInt(configured, fallback, bounds);
+}
+
+function parseAuthFailureLimit(configured: { value: string | undefined; source: string }): number {
+  if (optionalTrimmed(configured.value) === "0") return 0;
+  return parseBoundedInt(configured, DEFAULT_AUTH_FAILURE_LIMIT, { min: 1, max: 10_000 });
 }
 
 function parseBoolean(
@@ -355,6 +405,21 @@ function tomlString(table: TomlTable, key: string): string | undefined {
     }
   }
   return undefined;
+}
+
+function parseCorsOrigins(value: string): string[] {
+  const origins = [...new Set(value.split(",").map((origin) => origin.trim()).filter(Boolean))];
+  for (const origin of origins) {
+    if (origin === "*" && origins.length === 1) continue;
+    try {
+      const url = new URL(origin);
+      if ((url.protocol === "https:" || url.protocol === "http:") && url.origin === origin && !origin.includes("*")) continue;
+    } catch {
+      // Invalid origins are configuration errors, including paths and credentials.
+    }
+    throw new Error("CORS_ALLOW_ORIGINS / cors_allow_origins must contain exact HTTP(S) origins, '*' alone, or an empty string");
+  }
+  return origins;
 }
 
 function scalarToString(value: string | number | boolean | TomlTable | undefined): string | undefined {

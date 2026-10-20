@@ -1,6 +1,6 @@
 {
   "name": "cursor-api",
-  "version": "20260903.1",
+  "version": "20261016.1",
   "description": "OpenAI-compatible gateway (Chat Completions and Responses) over the official Cursor SDK.",
   "license": "MIT",
   "type": "module",
@@ -17,15 +17,10 @@
     "test": "npm run build && node --test tests/*.test.mjs"
   },
   "dependencies": {
-    "@cursor/sdk": "1.0.30"
-  },
-  "overrides": {
-    "@connectrpc/connect-node": {
-      "undici": "6.28.0"
-    }
+    "@cursor/sdk": "1.0.37"
   },
   "devDependencies": {
-    "@types/node": "22.18.12",
-    "typescript": "5.9.2"
+    "@types/node": "22.20.5",
+    "typescript": "7.0.2"
   }
 }

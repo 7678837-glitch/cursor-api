@@ -9,6 +9,33 @@ Version numbers use **`YYYYMMDD.N`** (date + same-day increment). The single sou
 
 ---
 
+## [20261016.1] — 2026-10-16
+
+### Changed
+
+- 升级 `@cursor/sdk` 至 1.0.37、TypeScript 至 7.0.2、Node 22 类型至 22.20.5；撤销已不再需要的 `undici` 覆盖。
+- CI 增加 PR 校验、Node 22.13 / 22 / 24 测试和 amd64 容器健康检查；更新官方 Actions，发布构建禁用缓存。
+- 限制运行与停车会话数量，定期清理过期会话映射；新配置见双语 README。
+
+### Fixed
+
+- 无状态 Responses 工具回合可续接停车会话；`reasoning.effort` 按模型支持档位映射。
+- 工具回合生成的 response ID 持久化供后续恢复；数据库写失败时释放已创建或恢复的 Agent 及容量占位。
+- SSE 立即发送响应头并维持心跳；上游失败区分认证、限流、忙碌、不可用和超时，保留诊断信息。
+- 可选忽略 Chat Completions 采样参数，默认保持严格校验。
+
+### Security
+
+- 认证失败达到每地址窗口上限后拒绝凭据校验，响应附带 `Retry-After`；管理页禁止嵌入。
+- 日志保留 token 数量并递归遮盖嵌套对象、数组及消息中的凭据。
+- CORS 支持精确来源白名单及关闭模式，默认通配响应不再回显任意来源。
+
+### Documentation
+
+- [维护评估](docs/maintenance-20261016.md)记录现有 issue / PR 的处理结果、官方 SDK 核验依据与验证边界。
+
+---
+
 ## [20260903.1] — 2026-09-03
 
 ### Fixed

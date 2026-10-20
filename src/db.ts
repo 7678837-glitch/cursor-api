@@ -592,6 +592,17 @@ export function upsertConversation(
   ).run(apiKeyId, MAX_CONVERSATIONS_PER_KEY);
 }
 
+/** Drops conversation → agent mappings not used since `olderThanIso`. Returns rows removed. */
+export function pruneConversations(db: DatabaseSync, olderThanIso: string): number {
+  const result = db.prepare("DELETE FROM conversations WHERE updated_at < ?").run(olderThanIso);
+  return Number(result.changes);
+}
+
+export function countConversations(db: DatabaseSync): number {
+  const row = db.prepare("SELECT COUNT(*) AS n FROM conversations").get() as { n: number } | undefined;
+  return Number(row?.n ?? 0);
+}
+
 export function insertSystemLog(
   db: DatabaseSync,
   entry: {

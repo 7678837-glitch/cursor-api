@@ -53,13 +53,15 @@ export function parseResponsesRequest(body: unknown): ParsedChatRequest {
     optimize_for: body.optimize_for,
     max_tokens: body.max_output_tokens ?? body.max_tokens,
     max_completion_tokens: body.max_completion_tokens,
-    reasoning_effort: body.reasoning_effort ?? reasoningEffortOf(body.reasoning),
+    reasoning_effort: body.reasoning_effort,
     verbosity: body.verbosity ?? textVerbosityOf(body.text),
   };
   if (conversationId) chatBody.conversation_id = conversationId;
   dropUndefined(chatBody);
   const parsed = parseChatCompletionsRequest(chatBody);
   parsed.includeUsage = true;
+  const effortHint = reasoningEffortOf(body.reasoning);
+  if (effortHint !== undefined) parsed.reasoning_effort_hint = effortHint;
   if (customToolNames.length > 0) parsed.customToolNames = customToolNames;
   return parsed;
 }

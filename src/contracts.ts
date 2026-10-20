@@ -4,6 +4,7 @@
  */
 
 export interface AppConfig {
+  corsAllowOrigins: string[];
   cursorApiKey: string;
   gatewayHost: string;
   gatewayPort: number;
@@ -20,6 +21,16 @@ export interface AppConfig {
   logDetailedMaxBytes: number;
   logMaxDetailBytes: number;
   parkTimeoutMs: number;
+  /** Unsupported Chat Completions sampling knobs are dropped instead of rejected. */
+  ignoreSamplingParams: boolean;
+  /** SSE comment heartbeat interval while a stream is open; 0 disables it. */
+  sseKeepaliveMs: number;
+  /** Failed authentication attempts allowed per address each minute; 0 disables throttling. */
+  authFailureLimit: number;
+  /** Upper bound on in-memory Cursor sessions (running or parked for tool results). */
+  maxLiveSessions: number;
+  /** Days a conversation_id → agent mapping survives without use. */
+  conversationTtlDays: number;
 }
 
 export interface LogPolicy {
@@ -166,6 +177,8 @@ export interface ParsedChatRequest {
   params?: ModelParam[];
   variant?: string;
   reasoning_effort?: string;
+  /** A non-strict effort preference from a Responses request. */
+  reasoning_effort_hint?: string;
   verbosity?: string;
   fast?: string;
   optimize_for?: string;
@@ -174,6 +187,8 @@ export interface ParsedChatRequest {
   customToolNames?: string[];
   tool_choice?: "auto" | "none" | { name: string };
   conversation_id?: string;
+  /** The gateway assigned the conversation ID, so transcript matching remains valid. */
+  conversation_id_generated?: boolean;
 }
 
 export interface OpenAiModel {
@@ -205,6 +220,7 @@ export interface CursorChatResult {
   params?: ModelParam[];
   status: "finished" | "error" | "cancelled";
   finish_reason: "stop" | "tool_calls" | "cancelled" | "error";
+  error?: { message: string; code?: string };
   tool_calls?: OpenAiToolCall[];
   /** Cursor `thinking-delta` text; OpenCode reads this as `reasoning_content`. */
   reasoning?: string;

@@ -1,5 +1,7 @@
 # cursor-api
 
+网关使用 `@cursor/sdk` **1.0.37**，要求 Node **>=22.13**。官方接口以 [SDK 文档](https://cursor.com/docs/sdk/typescript)为准；依赖版本、PR 评估与验证边界见[本次维护评估](docs/maintenance-20261016.md)。
+
 **把 Cursor 模型暴露成 OpenAI 兼容接口。** 任意 OpenAI 客户端指向 `/v1`；在管理台签发客户端 Key、查看请求日志。
 
 **English:** [`README.md`](./README.md) · **变更记录：** [`CHANGELOG.md`](./CHANGELOG.md)
@@ -98,6 +100,14 @@ detailed = false
 | `[logs].detailed_max_bytes` | 单条请求/响应 JSON 上限（4KiB–1MiB，默认 64KiB） |
 | `[logs].max_detail_bytes` | `model` + 详细正文合计 UTF-8 字节上限（默认 256MiB），超限先删最旧行 |
 | `park_timeout_ms` | 工具轮次在内存里保留多久（默认 **300000**）。网关重启后，下一次工具结果按 HTTP transcript 续场 |
+| `max_live_sessions` | 内存中运行和等待工具结果的 Cursor 会话上限（默认 **256**）；正在创建的会话也计入上限 |
+| `conversation_ttl_days` | 未使用的持久化 `conversation_id` 映射保留天数（默认 **30**） |
+| `ignore_sampling_params` | 丢弃 Chat Completions 不支持的采样参数而不返回 400（默认 **false**） |
+| `sse_keepalive_ms` | 空闲流式响应发送 `: keepalive` 注释的间隔（默认 **15000**；`0` 关闭） |
+| `auth_failure_limit` | 每个地址每分钟允许的客户端或管理密钥认证失败次数（默认 **20**；`0` 关闭） |
+| `cors_allow_origins` | 浏览器跨域来源，默认 `"*"`；用逗号分隔精确来源（如 `"https://app.example.com,http://localhost:5173"`），空字符串关闭 CORS。环境变量 `CORS_ALLOW_ORIGINS` 可覆盖，包括空值 |
+
+会话达到上限时先淘汰最久未活动的待回传工具会话；全部运行中时返回 `503 too_many_sessions`。淘汰或映射过期后的客户端可通过完整历史重放继续。认证失败达到限制后，同地址的所有认证请求均返回 `429` 和 `Retry-After`，直到窗口结束；网关只认直连地址，反向代理后的客户端会共享此限制，请在代理层配置限流并相应调整阈值。
 
 ```bash
 chmod 600 data/config/gateway.toml
@@ -235,6 +245,8 @@ GIT_COMMIT=$(git rev-parse HEAD) docker compose build
 ---
 
 ## 健康检查
+
+镜像自带 Docker `HEALTHCHECK`，按环境变量和 TOML 中的实际监听地址、端口探测 `/health`。此检查只验证网关进程存活，不代表 Cursor 密钥有效或模型可用。
 
 | 端点 | 用途 |
 |------|------|

@@ -4,6 +4,7 @@ import type { DatabaseSync } from "node:sqlite";
 import type { ApiKeyRow } from "./contracts.js";
 import { authenticationError, permissionError } from "./errors.js";
 import { getApiKeyByDigest } from "./db.js";
+import { guardAuth } from "./auth-throttle.js";
 import { readAdminToken, readClientToken } from "./http.js";
 
 export function generateClientKey(): {
@@ -37,6 +38,10 @@ export function requireClientKey(
   db: DatabaseSync,
   pepper: string,
 ): ApiKeyRow {
+  return guardAuth(req, () => checkClientKey(req, db, pepper));
+}
+
+function checkClientKey(req: IncomingMessage, db: DatabaseSync, pepper: string): ApiKeyRow {
   const token = readClientToken(req);
   if (token === null) {
     throw authenticationError();
@@ -53,6 +58,10 @@ export function requireClientKey(
 }
 
 export function requireAdminKey(req: IncomingMessage, adminAccessKey: string): void {
+  guardAuth(req, () => checkAdminKey(req, adminAccessKey));
+}
+
+function checkAdminKey(req: IncomingMessage, adminAccessKey: string): void {
   const token = (readAdminToken(req) ?? "").trim();
   const expected = adminAccessKey.trim();
   if (!timingSafeEqualUtf8(token, expected)) {

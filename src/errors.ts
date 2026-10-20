@@ -2,13 +2,15 @@ export class GatewayError extends Error {
   readonly httpStatus: number;
   readonly code: string;
   readonly openaiType: string;
+  readonly retryAfter?: number;
 
-  constructor(httpStatus: number, code: string, message: string, openaiType: string) {
+  constructor(httpStatus: number, code: string, message: string, openaiType: string, retryAfter?: number) {
     super(message);
     this.name = "GatewayError";
     this.httpStatus = httpStatus;
     this.code = code;
     this.openaiType = openaiType;
+    this.retryAfter = retryAfter;
   }
 }
 
@@ -42,8 +44,8 @@ export function permissionError(message: string): GatewayError {
   return new GatewayError(403, "permission_error", message, "permission_error");
 }
 
-export function rateLimitError(message: string): GatewayError {
-  return new GatewayError(429, "rate_limit_error", message, "rate_limit_error");
+export function rateLimitError(message: string, retryAfter?: number): GatewayError {
+  return new GatewayError(429, "rate_limit_error", message, "rate_limit_error", retryAfter);
 }
 
 export function payloadTooLarge(maxBytes: number): GatewayError {
@@ -61,6 +63,14 @@ export function upstreamAuthError(message = "Cursor authentication failed"): Gat
 
 export function upstreamError(message = "Cursor request failed"): GatewayError {
   return new GatewayError(502, "upstream_error", message, "upstream_error");
+}
+
+export function upstreamUnavailable(message = "Cursor is temporarily unavailable"): GatewayError {
+  return new GatewayError(503, "upstream_unavailable", message, "upstream_error");
+}
+
+export function upstreamTimeout(message = "Cursor request timed out"): GatewayError {
+  return new GatewayError(504, "upstream_timeout", message, "upstream_error");
 }
 
 export function cancelledError(message = "Request cancelled"): GatewayError {

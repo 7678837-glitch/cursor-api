@@ -1,5 +1,7 @@
 # cursor-api
 
+The gateway uses `@cursor/sdk` **1.0.37** and requires Node **>=22.13**. See the [official SDK reference](https://cursor.com/docs/sdk/typescript) and [maintenance assessment](docs/maintenance-20261016.md) for dependency versions, PR decisions, and validation limits.
+
 **OpenAI-compatible gateway for Cursor models.** Point any OpenAI client at `/v1`; manage client keys and logs in a built-in admin UI.
 
 **Chinese:** [`README.zh-CN.md`](./README.zh-CN.md) · **Changelog:** [`CHANGELOG.md`](./CHANGELOG.md)
@@ -98,6 +100,14 @@ detailed = false
 | `[logs].detailed_max_bytes` | Per-field cap for request/response JSON (4KiB–1MiB, default 64KiB) |
 | `[logs].max_detail_bytes` | Cap total UTF-8 bytes of `model` + detail columns (default 256MiB); oldest rows dropped first |
 | `park_timeout_ms` | How long a pending tool round stays in memory (default **300000**). After a restart, the next tool-result request continues from the HTTP transcript |
+| `max_live_sessions` | Maximum running and parked Cursor sessions in memory (default **256**); a pending creation counts toward the limit |
+| `conversation_ttl_days` | Drop unused persisted `conversation_id` mappings after this many days (default **30**) |
+| `ignore_sampling_params` | Drop unsupported Chat Completions sampling knobs instead of returning 400 (default **false**) |
+| `sse_keepalive_ms` | Interval for SSE `: keepalive` comments during idle streams (default **15000**; `0` disables) |
+| `auth_failure_limit` | Failed client or admin authentication attempts allowed per address per minute (default **20**; `0` disables) |
+| `cors_allow_origins` | Browser origins, default `"*"`. Use comma-separated exact HTTP(S) origins or an empty string to disable CORS. `CORS_ALLOW_ORIGINS` overrides TOML, including an explicitly empty value |
+
+At the session cap, the oldest parked tool session is evicted; if all sessions are running, new work gets `503 too_many_sessions`. Clients can continue evicted or expired conversations by replaying full history. Once an address reaches the authentication failure limit, all authentication requests from it receive `429` and `Retry-After` until the window ends. Only the direct socket address is used, so clients behind a reverse proxy share the limit; configure proxy rate limits and adjust this threshold accordingly.
 
 ```bash
 chmod 600 data/config/gateway.toml
@@ -235,6 +245,8 @@ GIT_COMMIT=$(git rev-parse HEAD) docker compose build
 ---
 
 ## Health
+
+The image includes a Docker `HEALTHCHECK` that uses the actual bind address and port from environment variables or TOML to probe `/health`. It checks gateway liveness, not Cursor credentials or model availability.
 
 | Endpoint | Purpose |
 |----------|---------|

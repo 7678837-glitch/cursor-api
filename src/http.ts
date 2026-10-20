@@ -1,10 +1,14 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { GatewayError, httpStatusOf, toOpenAiErrorBody, toSimpleErrorBody } from "./errors.js";
 
-export function corsHeaders(req: IncomingMessage): Record<string, string> {
+export function corsHeaders(req: IncomingMessage, allowOrigins: string[] = ["*"]): Record<string, string> {
+  if (allowOrigins.length === 0) return {};
   const origin = req.headers.origin;
+  const wildcard = allowOrigins.includes("*");
+  if (!wildcard && (typeof origin !== "string" || !allowOrigins.includes(origin))) return { vary: "Origin" };
   return {
-    "access-control-allow-origin": typeof origin === "string" && origin.length > 0 ? origin : "*",
+    "access-control-allow-origin": wildcard ? "*" : origin as string,
+    ...(!wildcard ? { vary: "Origin" } : {}),
     "access-control-allow-headers": "Authorization, Content-Type, X-Api-Key",
     "access-control-allow-methods": "GET, POST, OPTIONS",
     "access-control-max-age": "86400",
@@ -33,14 +37,20 @@ export function sendOpenAiError(
   extraHeaders?: Record<string, string>,
 ): void {
   const status = httpStatusOf(error);
+  const retryAfter = error instanceof GatewayError ? error.retryAfter : undefined;
   sendJson(res, status, toOpenAiErrorBody(error, requestId), {
     ...(requestId ? { "x-request-id": requestId } : {}),
+    ...(retryAfter !== undefined ? { "retry-after": String(retryAfter) } : {}),
     ...extraHeaders,
   });
 }
 
 export function sendSimpleError(res: ServerResponse, error: unknown): void {
-  sendJson(res, httpStatusOf(error), toSimpleErrorBody(error));
+  sendJson(res, httpStatusOf(error), toSimpleErrorBody(error), {
+    ...(error instanceof GatewayError && error.retryAfter !== undefined
+      ? { "retry-after": String(error.retryAfter) }
+      : {}),
+  });
 }
 
 export function readBearer(req: IncomingMessage): string | null {
@@ -72,10 +82,18 @@ export function readAdminToken(req: IncomingMessage): string | null {
   return null;
 }
 
+const DEFAULT_SSE_KEEPALIVE_MS = 15_000;
+let sseKeepaliveMs = DEFAULT_SSE_KEEPALIVE_MS;
+
+export function configureSse(options: { keepaliveMs: number }): void {
+  sseKeepaliveMs = Math.max(0, Math.floor(options.keepaliveMs));
+}
+
 export function beginSse(
   res: ServerResponse,
   requestId: string,
   extraHeaders?: Record<string, string>,
+  options: { keepaliveMs?: number } = {},
 ): void {
   res.writeHead(200, {
     "content-type": "text/event-stream; charset=utf-8",
@@ -85,6 +103,24 @@ export function beginSse(
     "x-request-id": requestId,
     ...extraHeaders,
   });
+  res.flushHeaders();
+  startSseKeepalive(res, options.keepaliveMs ?? sseKeepaliveMs);
+}
+
+function startSseKeepalive(res: ServerResponse, intervalMs: number): void {
+  if (intervalMs <= 0) return;
+  const stop = (): void => {
+    clearInterval(timer);
+    res.off("close", stop);
+    res.off("finish", stop);
+  };
+  const timer = setInterval(() => {
+    if (sseResponseClosed(res)) return stop();
+    if (!res.writableNeedDrain) res.write(": keepalive\n\n");
+  }, intervalMs);
+  timer.unref();
+  res.on("close", stop);
+  res.on("finish", stop);
 }
 
 export async function writeSse(res: ServerResponse, data: unknown): Promise<void> {

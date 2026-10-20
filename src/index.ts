@@ -4,6 +4,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import path from "node:path";
 import { handleAdminRequest } from "./admin.js";
 import { requireClientKey } from "./auth.js";
+import { configureAuthThrottle } from "./auth-throttle.js";
 import { loadConfig } from "./config.js";
 import {
   getConversationAgentId,
@@ -16,6 +17,7 @@ import {
 import { GatewayError, cancelledError, httpStatusOf, modelNotFound } from "./errors.js";
 import {
   beginSse,
+  configureSse,
   corsHeaders,
   readJsonBody,
   sendJson,
@@ -34,8 +36,14 @@ import {
   parseResponsesRequest,
   ResponsesStreamWriter,
 } from "./responses.js";
-import { getCursorModel, listCursorModels, validateChatRequestModel, warmCursorAccount } from "./cursor.js";
-import { aliasLiveConversation, runChatTurn, validateChatTurnRequest } from "./session.js";
+import { getCursorModel, listCursorModels, runFailureError, validateChatRequestModel, warmCursorAccount } from "./cursor.js";
+import {
+  aliasLiveConversation,
+  configureSessionLimits,
+  runChatTurn,
+  startSessionSweeper,
+  validateChatTurnRequest,
+} from "./session.js";
 import type { AppConfig, CursorChatResult, OpenAiToolCall, ParsedChatRequest, Usage } from "./contracts.js";
 
 let config: AppConfig;
@@ -47,11 +55,16 @@ try {
   process.exit(1);
 }
 
+configureSse({ keepaliveMs: config.sseKeepaliveMs });
+configureAuthThrottle(config.authFailureLimit);
+
 const db = openDb(config.dataDir, {
   retentionDays: config.logRetentionDays,
   maxRows: config.logMaxRows,
   maxDetailBytes: config.logMaxDetailBytes,
 });
+configureSessionLimits({ maxLiveSessions: config.maxLiveSessions });
+startSessionSweeper({ db, conversationTtlDays: config.conversationTtlDays });
 setSystemLogWriter((entry) => {
   insertSystemLog(db, entry);
 });
@@ -88,7 +101,7 @@ server.listen(config.gatewayPort, config.gatewayHost, () => {
 });
 
 async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
-  const cors = corsHeaders(req);
+  const cors = corsHeaders(req, config.corsAllowOrigins);
   let url: URL;
   try {
     url = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);
@@ -147,7 +160,11 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
         url.pathname === "/management.html")
     ) {
       const html = fs.readFileSync(adminPagePath, "utf8");
-      res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
+      res.writeHead(200, {
+        "content-type": "text/html; charset=utf-8", "cache-control": "no-store",
+        "x-frame-options": "DENY", "content-security-policy": "frame-ancestors 'none'",
+        "x-content-type-options": "nosniff", "referrer-policy": "no-referrer",
+      });
       res.end(html);
       return;
     }
@@ -188,7 +205,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
       return;
     }
 
-    sendJson(res, 404, { error: "Not found", code: "not_found" });
+    sendJson(res, 404, { error: "Not found", code: "not_found" }, cors);
   } catch (error) {
     logError("request failed", { path: url.pathname, code: error instanceof GatewayError ? error.code : "server_error" });
     if (url.pathname.startsWith("/v1/")) {
@@ -223,7 +240,7 @@ async function handleChat(req: IncomingMessage, res: ServerResponse): Promise<vo
     const body = await readJsonBody(req, config.maxBodyBytes);
     model = peekModel(body);
     requestDetail = snapshotIncomingBody(body);
-    const parsed = parseChatCompletionsRequest(body);
+    const parsed = parseChatCompletionsRequest(body, { ignoreSamplingParams: config.ignoreSamplingParams });
     model = parsed.model;
     stream = parsed.stream ? 1 : 0;
     validateChatTurnRequest(parsed);
@@ -231,7 +248,7 @@ async function handleChat(req: IncomingMessage, res: ServerResponse): Promise<vo
       requestDetail = truncateUtf8(buildRequestDetail(parsed), config.logDetailedMaxBytes);
     }
     await validateChatRequestModel(config.cursorApiKey, parsed);
-    const headers = corsHeaders(req);
+    const headers = corsHeaders(req, config.corsAllowOrigins);
 
     const abort = new AbortController();
     let holdForTools = false;
@@ -353,9 +370,7 @@ async function handleChat(req: IncomingMessage, res: ServerResponse): Promise<vo
         throw cancelledError();
       }
       if (result.status === "error" || result.finish_reason === "error") {
-        httpStatus = 502;
-        errorCode = "upstream_error";
-        throw new GatewayError(502, "upstream_error", "Cursor request failed", "upstream_error");
+        throw runFailureError(result.error);
       }
 
       const toolCalls = result.tool_calls ?? collectedTools;
@@ -414,7 +429,7 @@ async function handleChat(req: IncomingMessage, res: ServerResponse): Promise<vo
     errorCode = error instanceof GatewayError ? error.code : "server_error";
     errorMessage = error instanceof Error ? error.message : String(error);
     if (!res.headersSent) {
-      sendOpenAiError(res, error, requestId, corsHeaders(req));
+      sendOpenAiError(res, error, requestId, corsHeaders(req, config.corsAllowOrigins));
     } else {
       const mapped = error instanceof GatewayError ? error : null;
       await writeSse(res, {
@@ -498,13 +513,16 @@ async function handleResponses(req: IncomingMessage, res: ServerResponse): Promi
     model = parsed.model;
     stream = parsed.stream ? 1 : 0;
     const resumeId = parsed.conversation_id;
-    if (!parsed.conversation_id) parsed.conversation_id = requestId;
+    if (!parsed.conversation_id) {
+      parsed.conversation_id = requestId;
+      parsed.conversation_id_generated = true;
+    }
     validateChatTurnRequest(parsed);
     if (config.logDetailed) {
       requestDetail = truncateUtf8(buildRequestDetail(parsed), config.logDetailedMaxBytes);
     }
     await validateChatRequestModel(config.cursorApiKey, parsed);
-    const headers = corsHeaders(req);
+    const headers = corsHeaders(req, config.corsAllowOrigins);
 
     const abort = new AbortController();
     let holdForTools = false;
@@ -593,9 +611,7 @@ async function handleResponses(req: IncomingMessage, res: ServerResponse): Promi
         throw cancelledError();
       }
       if (result.status === "error" || result.finish_reason === "error") {
-        httpStatus = 502;
-        errorCode = "upstream_error";
-        throw new GatewayError(502, "upstream_error", "Cursor request failed", "upstream_error");
+        throw runFailureError(result.error);
       }
 
       const toolCalls = result.tool_calls ?? collectedTools;
@@ -641,7 +657,7 @@ async function handleResponses(req: IncomingMessage, res: ServerResponse): Promi
     errorCode = error instanceof GatewayError ? error.code : "server_error";
     errorMessage = error instanceof Error ? error.message : String(error);
     if (!res.headersSent) {
-      sendOpenAiError(res, error, requestId, corsHeaders(req));
+      sendOpenAiError(res, error, requestId, corsHeaders(req, config.corsAllowOrigins));
     } else {
       const mapped = error instanceof GatewayError ? error : null;
       await writer?.fail({

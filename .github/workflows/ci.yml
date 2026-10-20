@@ -1,0 +1,60 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version: ["22.13", "22", "24"]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/build-push-action@v7
+        with:
+          context: .
+          platforms: linux/amd64
+          push: false
+          load: true
+          tags: cursor-api:ci
+          build-args: |
+            GIT_COMMIT=${{ github.sha }}
+      - name: Container reports healthy
+        run: |
+          docker run -d --name cursor-api-ci -e CURSOR_API_KEY=ci-placeholder -e ADMIN_ACCESS_KEY=ci-admin -e API_KEY_PEPPER=ci-pepper cursor-api:ci
+          for i in $(seq 1 45); do
+            if [ "$(docker inspect -f '{{.State.Health.Status}}' cursor-api-ci)" = healthy ]; then
+              docker exec cursor-api-ci node -e "fetch('http://127.0.0.1:8787/health').then(r=>r.json()).then(b=>process.exit(b.git_commit==='${{ github.sha }}'?0:1))"
+              exit 0
+            fi
+            sleep 2
+          done
+          docker logs cursor-api-ci
+          exit 1
+      - if: always()
+        run: docker rm -f cursor-api-ci || true

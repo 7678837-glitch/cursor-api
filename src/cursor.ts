@@ -1,10 +1,12 @@
 import { mkdir } from "node:fs/promises";
 import {
+  AgentBusyError,
   Agent,
   AuthenticationError,
   ConfigurationError,
   Cursor,
   CursorSdkError,
+  NetworkError,
   RateLimitError,
   type AgentUsage,
   type ModelListItem,
@@ -21,10 +23,13 @@ import {
   invalidRequest,
   modelNotFound,
   rateLimitError,
+  conversationBusyError,
   upstreamAuthError,
   upstreamError,
+  upstreamTimeout,
+  upstreamUnavailable,
 } from "./errors.js";
-import { logError } from "./log.js";
+import { logError, scrubSecrets } from "./log.js";
 
 const CATALOG_TTL_MS = 60_000;
 const ACCOUNT_TTL_MS = 10 * 60 * 1000;
@@ -231,6 +236,9 @@ export function resolveChatParams(
     ids: ["reasoning_effort", "effort", "reasoning"],
     displayName: /effort|reasoning|thinking/i,
   });
+  if (request.reasoning_effort === undefined && request.reasoning_effort_hint !== undefined && model) {
+    applyEffortHint(model, merged, request.reasoning_effort_hint);
+  }
   applyNamedParam(model, request.model, merged, request.verbosity, {
     field: "verbosity",
     ids: ["verbosity"],
@@ -378,6 +386,29 @@ function applyNamedParam(
   merged.set(parameter.id, matchParamValue(parameter, raw));
 }
 
+const EFFORT_RANK = ["none", "off", "minimal", "low", "medium", "high", "xhigh", "max"];
+
+export function applyEffortHint(model: ModelListItem, merged: Map<string, string>, hint: string): void {
+  const parameter = findParameter(model, { ids: ["reasoning_effort", "effort", "reasoning"], displayName: /effort|reasoning|thinking/i });
+  if (!parameter || isBooleanParam(parameter)) return;
+  const wanted = foldKey(hint);
+  const exact = parameter.values.find((value) => foldKey(value.value) === wanted || foldKey(value.displayName ?? "") === wanted);
+  if (exact) {
+    merged.set(parameter.id, exact.value);
+    return;
+  }
+  const target = EFFORT_RANK.indexOf(wanted);
+  if (target < 0) return;
+  let best: { value: string; distance: number; rank: number } | undefined;
+  for (const value of parameter.values) {
+    const rank = EFFORT_RANK.indexOf(foldKey(value.value));
+    if (rank < 0) continue;
+    const distance = Math.abs(rank - target);
+    if (!best || distance < best.distance || (distance === best.distance && rank < best.rank)) best = { value: value.value, distance, rank };
+  }
+  if (best) merged.set(parameter.id, best.value);
+}
+
 function findParameter(
   model: ModelListItem,
   spec: { ids: string[]; displayName: RegExp },
@@ -487,20 +518,60 @@ export function mapCursorError(error: unknown): GatewayError {
   if (error instanceof GatewayError) {
     return error;
   }
+  const mapped = classifyCursorError(error);
+  const sdk = error instanceof CursorSdkError ? error : undefined;
+  logError("cursor upstream error", {
+    code: mapped.code,
+    http_status: mapped.httpStatus,
+    error_name: error instanceof Error ? error.name : typeof error,
+    ...(sdk?.code ? { upstream_code: sdk.code } : {}),
+    ...(sdk?.status !== undefined ? { upstream_status: sdk.status } : {}),
+    ...(sdk?.operation ? { operation: sdk.operation } : {}),
+    ...(sdk?.requestId ? { upstream_request_id: sdk.requestId } : {}),
+    ...(sdk ? { retryable: sdk.isRetryable } : {}),
+  });
+  return mapped;
+}
+
+function classifyCursorError(error: unknown): GatewayError {
   if (error instanceof AuthenticationError) {
     return upstreamAuthError();
   }
   if (error instanceof RateLimitError) {
     return rateLimitError(error.message || "Cursor usage limit exceeded");
   }
+  if (error instanceof AgentBusyError) return conversationBusyError();
   if (error instanceof ConfigurationError) {
     return invalidRequest(error.message);
   }
-  if (error instanceof CursorSdkError && error.status === 401) {
-    return upstreamAuthError();
+  if (error instanceof CursorSdkError && (error.status === 408 || error.status === 504)) {
+    return upstreamTimeout(withUpstreamDetail("Cursor request timed out", error.message));
   }
-  if (error instanceof CursorSdkError && error.status === 429) {
-    return rateLimitError(error.message || "Cursor usage limit exceeded");
+  if (error instanceof NetworkError) return upstreamUnavailable(withUpstreamDetail("Cannot reach Cursor", error.message));
+  if (error instanceof CursorSdkError) {
+    if (error.status === 401 || error.status === 403) return upstreamAuthError();
+    if (error.status === 429) return rateLimitError(error.message || "Cursor usage limit exceeded");
+    if ((error.status !== undefined && error.status >= 500) || error.isRetryable) return upstreamUnavailable(withUpstreamDetail("Cursor is temporarily unavailable", error.message));
+    return upstreamError(withUpstreamDetail("Cursor request failed", error.message));
   }
   return upstreamError();
+}
+
+export function runFailureError(failure: { message: string; code?: string } | undefined): GatewayError {
+  if (!failure) return upstreamError();
+  logError("cursor run failed", {
+    ...(failure.code ? { upstream_code: failure.code } : {}),
+    upstream_message: scrubSecrets(failure.message).slice(0, 300),
+  });
+  const text = `${failure.code ?? ""} ${failure.message}`;
+  if (/rate.?limit|resource.?exhausted|quota|usage.?limit|too.?many.?requests/i.test(text)) return rateLimitError(withUpstreamDetail("Cursor usage limit exceeded", failure.message));
+  if (/unauthenticated|unauthori[sz]ed|invalid.?api.?key|permission.?denied/i.test(text)) return upstreamAuthError();
+  if (/deadline.?exceeded|timed?.?out/i.test(text)) return upstreamTimeout(withUpstreamDetail("Cursor request timed out", failure.message));
+  if (/unavailable|overloaded/i.test(text)) return upstreamUnavailable(withUpstreamDetail("Cursor is temporarily unavailable", failure.message));
+  return upstreamError(withUpstreamDetail("Cursor request failed", failure.message));
+}
+
+function withUpstreamDetail(summary: string, detail: string | undefined): string {
+  const trimmed = detail ? scrubSecrets(detail).trim() : undefined;
+  return !trimmed || trimmed === summary ? summary : `${summary}: ${trimmed.slice(0, 300)}`;
 }
