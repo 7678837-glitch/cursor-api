@@ -1,15 +1,50 @@
 /**
- * Field names whose values are credentials. Matched as a substring of the lower-cased name, so
- * camelCase and prefixed forms are covered (`accessToken`, `WorkosCursorSessionToken`, `tokenValue`,
- * `token_hash`, `client_secret_name`). Token *counts* are carved out by COUNT_WORDS below.
+ * Field names whose values are credentials. Matched as a substring of the normalized name, so
+ * camelCase, kebab, plural and prefixed forms are covered (`accessToken`, `refresh_tokens`,
+ * `WorkosCursorSessionToken`, `token_hash`, `client_secret_name`). The only carve-out is the exact
+ * COUNT_KEYS list below, and only for numeric values.
  */
 const SENSITIVE_KEY = /api[_-]?key|access[_-]?key|private[_-]?key|authorization|cookie|pepper|secret|token|password|passwd|credential|bearer|jwt/i;
 
-/** Count-style names (`input_tokens`, `maxTokens`, `prompt_token_count`) are removed before matching. */
-const COUNT_WORDS = /(^|_)([a-z0-9]*tokens|token_counts?)(?=_|$)/g;
+/**
+ * Token-count field names (normalized to snake_case) that are logged and shown as numbers. Exact
+ * names only: `access_tokens`, `refresh_tokens`, `device_tokens` and every other `*_tokens` name
+ * stay credentials. A count key is only exempt when its value is a number or null; a string,
+ * boolean or object under one of these names is masked like any other `token` field.
+ */
+const COUNT_KEYS = new Set([
+  "input_tokens",
+  "output_tokens",
+  "total_tokens",
+  "prompt_tokens",
+  "completion_tokens",
+  "reasoning_tokens",
+  "cached_tokens",
+  "cache_read_tokens",
+  "cache_write_tokens",
+  "cache_read_input_tokens",
+  "cache_creation_input_tokens",
+  "max_tokens",
+  "max_output_tokens",
+  "max_completion_tokens",
+  "budget_tokens",
+  "token_count",
+  "prompt_token_count",
+]);
+
+/** Usage breakdown objects (`prompt_tokens_details`): walked so nested count keys stay readable. */
+const COUNT_DETAIL_KEYS = new Set([
+  "input_tokens_details",
+  "output_tokens_details",
+  "prompt_tokens_details",
+  "completion_tokens_details",
+]);
 
 /** Names that only identify a credential. Exact names only; no generic suffix exemption. */
 const IDENTIFIER_KEYS = new Set(["api_key_id", "api_key_ids", "key_id", "key_prefix", "api_key_prefix", "api_key_name"]);
+
+/** Field names longer than this are treated as credentials without being normalized (keeps it O(1)). */
+const MAX_KEY_CHARS = 256;
 
 /** `accessToken` -> `access_token`, `X-Cursor-Token` -> `x_cursor_token`, `APIKey` -> `api_key`. */
 function normalizeKey(key: string): string {
@@ -20,10 +55,15 @@ function normalizeKey(key: string): string {
     .toLowerCase();
 }
 
-function isSensitiveKey(key: string): boolean {
+type KeyClass = "sensitive" | "count" | "count_detail" | "plain";
+
+function classifyKey(key: string): KeyClass {
+  if (key.length > MAX_KEY_CHARS) return "sensitive";
   const normalized = normalizeKey(key);
-  if (IDENTIFIER_KEYS.has(normalized)) return false;
-  return SENSITIVE_KEY.test(normalized.replace(COUNT_WORDS, "$1"));
+  if (IDENTIFIER_KEYS.has(normalized)) return "plain";
+  if (COUNT_KEYS.has(normalized)) return "count";
+  if (COUNT_DETAIL_KEYS.has(normalized)) return "count_detail";
+  return SENSITIVE_KEY.test(normalized) ? "sensitive" : "plain";
 }
 
 const REDACTED = "[redacted]";
@@ -82,19 +122,119 @@ export function scrubSecrets(text: string): string {
   return out;
 }
 
-/** Same words the pre-#27 sanitizer used to mask whole values, plus `passwd`. */
-const VALUE_KEYWORDS = /api[_-]?key|authorization|pepper|secret|token|password|passwd/i;
-/** Count wording that mentions `token` without carrying one (`max_tokens`, `inputTokens`, `token count`). */
-const COUNT_WORDING = /[A-Za-z0-9_-]*tokens(?![A-Za-z])|token[_\s-]?counts?/gi;
+/**
+ * Credential words that make a string field value masked whole when they appear in the raw value
+ * (the pre-#27 words plus `passwd`, `cookie` and `credential`).
+ */
+const VALUE_KEYWORDS = /api[_-]?key|authorization|pepper|secret|token|password|passwd|cookie|credential/i;
 
 /**
- * String field values: mask known secret shapes in place; if a credential keyword is still left
- * (outside `[redacted]` and count wording), mask the whole value as the old sanitizer did.
+ * Exact count phrases that mention `tokens` without carrying a credential: the COUNT_KEYS names
+ * (snake or camelCase, e.g. `max_tokens`, `inputTokens`) and `<number> tokens`. Every alternative is
+ * anchored with `\b` and has bounded length, so the scan is linear. A phrase used as a name with a
+ * non-numeric value (`max_tokens=abc`) is not exempt; see countPhraseCarriesValue.
+ */
+const COUNT_PHRASE =
+  /\b(?:(?:max_?(?:output_?|completion_?)?|input_?|output_?|total_?|prompt_?|completion_?|reasoning_?|cached_?|cache_?(?:read|write|creation)_?(?:input_?)?|budget_?)tokens|prompt_?token_?count|\d{1,12}(?:,\d{3}){0,6}[ \t]{0,3}tokens)\b/gi;
+
+/** Field values and log messages are cut to this many UTF-16 units before any regex runs. */
+export const MAX_LOG_STRING_CHARS = 16_384;
+const TRUNCATED_SUFFIX = "…[truncated]";
+
+/**
+ * Caps a log string before it reaches the regexes. The cut drops the trailing partial word as well,
+ * so a secret straddling the limit cannot survive as a prefix too short for the patterns to match.
+ */
+function capLogString(text: string): string {
+  if (text.length <= MAX_LOG_STRING_CHARS) return text;
+  let end = MAX_LOG_STRING_CHARS;
+  while (end > 0 && !isWordBreak(text.charCodeAt(end - 1))) end -= 1;
+  return text.slice(0, end) + TRUNCATED_SUFFIX;
+}
+
+/** Characters that end a VALUE in the name=value rule: whitespace, quotes, backslash, `,;&`. */
+function isWordBreak(code: number): boolean {
+  return (
+    code === 0x20 || code === 0x09 || code === 0x0a || code === 0x0d ||
+    code === 0x22 || code === 0x27 || code === 0x5c || code === 0x2c || code === 0x3b || code === 0x26
+  );
+}
+
+/** Separator characters skipped around `:`/`=` when deciding whether a count phrase is a name. */
+function isPhraseFiller(char: string | undefined): boolean {
+  return char === "\\" || char === '"' || char === "'" || char === " " || char === "\t";
+}
+
+/**
+ * True when a count phrase is used as a field name with a non-numeric value: `max_tokens=abc`,
+ * `"max_tokens":"abc"`, `max_tokens: abc`. Looks at a bounded window after the phrase (no regex).
+ */
+function countPhraseCarriesValue(text: string, end: number): boolean {
+  let i = end;
+  const limit = Math.min(text.length, end + 8);
+  while (i < limit && isPhraseFiller(text[i])) i += 1;
+  if (i >= text.length || (text[i] !== ":" && text[i] !== "=")) return false;
+  i += 1;
+  const valueLimit = Math.min(text.length, i + 8);
+  while (i < valueLimit && isPhraseFiller(text[i])) i += 1;
+  if (i >= text.length) return false;
+  const code = text.charCodeAt(i);
+  if (code >= 0x30 && code <= 0x39) return false; // `max_tokens: 4096`
+  return !text.startsWith("null", i);
+}
+
+/** The raw value with exact count phrases blanked out; used only to look for credential words. */
+function withoutCountPhrases(text: string): string {
+  return text.replace(COUNT_PHRASE, (phrase: string, offset: number, whole: string) =>
+    countPhraseCarriesValue(whole, offset + phrase.length) ? phrase : " ",
+  );
+}
+
+/** Secret-like run: 16+ characters of `[A-Za-z0-9_+/=.-]` with both a letter and a digit. Linear. */
+const MIN_SECRET_RUN = 16;
+function hasSecretLikeRun(text: string): boolean {
+  let length = 0;
+  let letter = false;
+  let digit = false;
+  for (let i = 0; i <= text.length; i += 1) {
+    const code = i < text.length ? text.charCodeAt(i) : 0;
+    const isDigit = code >= 0x30 && code <= 0x39;
+    const isLetter = (code >= 0x41 && code <= 0x5a) || (code >= 0x61 && code <= 0x7a);
+    const isSymbol = code === 0x5f || code === 0x2b || code === 0x2f || code === 0x3d || code === 0x2e || code === 0x2d;
+    if (isDigit || isLetter || isSymbol) {
+      length += 1;
+      letter ||= isLetter;
+      digit ||= isDigit;
+      if (length >= MIN_SECRET_RUN && letter && digit) return true;
+    } else {
+      length = 0;
+      letter = false;
+      digit = false;
+    }
+  }
+  return false;
+}
+
+/**
+ * String field values: mask known secret shapes in place; if the raw value (not the scrubbed text)
+ * contains a credential word outside exact count phrases, mask the whole value as the old
+ * sanitizer did. Checking the raw value matters: a rule can swallow the keyword together with the
+ * secret shape next to it (`Bearer token_abc S`) and leave the real secret behind.
  */
 function sanitizeString(value: string): string {
-  const scrubbed = scrubSecrets(value);
-  const residue = scrubbed.split(REDACTED).join(" ").replace(COUNT_WORDING, " ");
-  return VALUE_KEYWORDS.test(residue) ? REDACTED : scrubbed;
+  const capped = capLogString(value);
+  if (VALUE_KEYWORDS.test(capped)) {
+    const blanked = withoutCountPhrases(capped);
+    // A count phrase only excuses the keyword when nothing else in the value looks like a secret
+    // (`max_tokens is FAKEs3cr3t…` stays masked; `max_tokens must be a positive integer` does not).
+    if (VALUE_KEYWORDS.test(blanked) || hasSecretLikeRun(blanked)) return REDACTED;
+  }
+  return scrubSecrets(capped);
+}
+
+/** Log messages: in-place masking only (no whole-value fallback), after the same length cap. */
+function scrubMessage(message: string): string {
+  return scrubSecrets(capLogString(message));
 }
 
 export type SystemLogEntry = {
@@ -133,7 +273,7 @@ function persist(level: "info" | "error", message: string, fields?: Record<strin
   try {
     writer({
       level,
-      message: scrubSecrets(message),
+      message: scrubMessage(message),
       fields: fields === undefined ? null : sanitizeFields(fields),
     });
   } catch {
@@ -160,22 +300,35 @@ export function truncateUtf8(text: string, maxBytes: number): string {
   return buf.subarray(0, cut).toString("utf8") + suffix;
 }
 
+/**
+ * Credential names mask any non-empty value, numbers and booleans included (PINs, OTPs). Count
+ * names are exempt only for numbers; usage-detail names only for plain objects, which are walked.
+ */
+function isMaskedField(kind: KeyClass, value: unknown): boolean {
+  if (value === null || value === undefined) return false;
+  switch (kind) {
+    case "plain":
+      return false;
+    case "count":
+      return typeof value !== "number";
+    case "count_detail":
+      return typeof value !== "object" || Array.isArray(value);
+    default:
+      return true;
+  }
+}
+
 export function sanitizeFields(fields: Record<string, unknown>): Record<string, unknown> {
   const safe: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(fields)) {
-    if (isSensitiveKey(key) && value !== null && value !== undefined) {
-      // Any non-empty value, numbers and booleans included (PINs, OTPs).
-      safe[key] = REDACTED;
-      continue;
-    }
-    safe[key] = sanitizeValue(value);
+    safe[key] = isMaskedField(classifyKey(key), value) ? REDACTED : sanitizeValue(value);
   }
   return safe;
 }
 
 function format(level: string, message: string, fields?: Record<string, unknown>): string {
   try {
-    const safe: Record<string, unknown> = { level, message: scrubSecrets(message), ts: new Date().toISOString() };
+    const safe: Record<string, unknown> = { level, message: scrubMessage(message), ts: new Date().toISOString() };
     if (fields) Object.assign(safe, sanitizeFields(fields));
     return JSON.stringify(safe);
   } catch {
