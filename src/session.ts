@@ -462,11 +462,11 @@ async function runClaimedChatTurn(
   });
 
   if (action === "continue_park" && turn.kind === "tool_results" && parked) {
-    await options.claimOutput?.();
     rememberConversation(parked, options);
     parked.sink = options.sink;
     parked.parkTimeoutMs = options.parkTimeoutMs ?? parked.parkTimeoutMs;
     applyToolResults(parked, turn.results);
+    await options.claimOutput?.();
     parked.lastRequestMessages = options.request.messages;
     indexSession(parked, options.apiKeyId, hashMessages(options.request.messages));
     const operation = async (): Promise<CursorChatResult> =>

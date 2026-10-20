@@ -130,3 +130,24 @@ test("parked tool continuation is counted as one pooled run per HTTP turn", { ti
     await gateway.stop();
   }
 });
+
+test("streaming invalid tool results return 400 before starting SSE", { timeout: 20_000 }, async () => {
+  const gateway = await startFakeGateway();
+  const tools = [{ type: "function", function: { name: "lookup", parameters: { type: "object", properties: {} } } }];
+  const messages = [{ role: "user", content: "CALL_TOOL" }];
+  try {
+    const first = await post(gateway, "/v1/chat/completions", {
+      model: "fake-model", conversation_id: "bad-tool-result", tools, messages,
+    });
+    assert.equal(first.status, 200);
+    const call = (await first.json()).choices[0].message.tool_calls[0];
+    const invalid = await post(gateway, "/v1/chat/completions", {
+      model: "fake-model", conversation_id: "bad-tool-result", tools, stream: true,
+      messages: [...messages, { role: "assistant", content: null, tool_calls: [call] },
+        { role: "tool", tool_call_id: "unknown-call", content: "42" }],
+    });
+    assert.equal(invalid.status, 400);
+    assert.match(invalid.headers.get("content-type"), /application\/json/);
+    await invalid.text();
+  } finally { await gateway.stop(); }
+});
