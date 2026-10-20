@@ -171,17 +171,58 @@ curl -s http://127.0.0.1:8787/v1/chat/completions \
 |------|------|------------|
 | `POST` | `/v1/chat/completions` | OpenAI SDK、OpenCode `"npm": "@ai-sdk/openai-compatible"` |
 | `POST` | `/v1/responses` | Codex、OpenCode `"npm": "@ai-sdk/openai"` |
+| `POST` | `/v1/messages` | Anthropic SDK、兼容 Claude 的客户端 |
 | `GET` | `/v1/models`、`/v1/models/{id}` | 模型列表 |
 
 支持流式（`stream: true`）、视觉（`image_url`，以及 OpenCode 的 `image` / 图片 `file` 部件）、思考块（`delta.reasoning_content`）、Cursor 参数（`params`、`variant`、`reasoning_effort` 等）。`variant` 匹配唯一的目录显示名；当 Cursor 把所有 variant 都起成同一个显示名时，改为匹配 effort/reasoning/fast 的值（OpenCode `--variant high` 在 `@ai-sdk/openai-compatible` 上不会发出该字段；请在请求体里发 `variant` 或 `reasoning_effort`）。支持 OpenAI 工具调用（`tools` / `tool_calls` / `role: tool`），供 OpenCode 等客户端在本地执行工具。Cursor 的 shell/文件工具保持关闭；仅在有客户端工具时打开 MCP，用来把这些工具暴露给模型。不支持音频。`temperature` / `top_p` / `seed` 会 400；`max_tokens` 仍接收。`conversation_id`（或 `metadata.conversation_id`）按客户端 Key 续同一个 Cursor Agent；ID 最多 512 个 UTF-8 字节，每个客户端 Key 保留最近 1000 条映射。工具停车超时为 `park_timeout_ms`（默认 300000）；网关重启后，工具结果按 HTTP transcript 续场。
 
 Cursor SDK 每轮接收的是单个 prompt，并不原生接收 OpenAI 角色消息。本项目会把 `system` / `developer` / `user` 角色序列化进 transcript 文本；因此应用传入的 `system` 或 `developer` 消息只能作为上下文，不能充当抵御恶意用户内容的硬安全边界。
 
+### Anthropic Messages（`POST /v1/messages`）
+
+Anthropic SDK / 兼容 Claude 的工具把 base URL 指向网关根地址（SDK 会自己拼 `/v1/messages`）：
+
+```text
+ANTHROPIC_BASE_URL=http://127.0.0.1:8787
+ANTHROPIC_API_KEY=<你的 cgk_ 客户端 key>      # 以 x-api-key 发送
+```
+
+- 支持 `system`（字符串或 text 块）、`text` / `image`（base64 或 URL）块、`stream: true`（`message_start` → `content_block_*` → `message_delta` → `message_stop`），思考内容以 `thinking` 块输出。
+- 客户端工具：`tools[].input_schema` → `tool_use` 块 + `stop_reason: "tool_use"`；下一轮 user 消息里回传 `tool_result`（`is_error: true` 会作为错误结果交给模型）。与 `tool_result` 同时出现的额外文本会附加到最后一个结果上。没有 `input_schema` 的服务端工具（`web_search_…`、`bash_…`）会被忽略。
+- `tool_choice`：`auto`、`tool`、`none`；`any` 退化为 `auto`（Cursor 无法强制调用工具）。
+- 忽略：`temperature`、`top_p`、`top_k`、`thinking`、`output_config`、`context_management`、`service_tier`。未知顶层字段也会忽略。拒绝：非空 `stop_sequences`、`document` 块。
+- Cursor 参数（`params`、`variant`、`reasoning_effort`、`verbosity`、`fast`、`optimize_for`）以及 `conversation_id` / `metadata.conversation_id` 与 Chat Completions 一致。
+- 错误为 Anthropic 格式：`{"type":"error","error":{"type":"invalid_request_error","message":"…"}}`。
+- `usage` 的 `input_tokens` / `output_tokens` / `cache_read_input_tokens` / `cache_creation_input_tokens` 来自 Cursor token 用量；非流式响应附带 `cursor.cost`。
+- `POST /v1/messages/count_tokens` 返回粗略估算（见下方 Claude Code）。
+
+### Claude Code
+
+Claude Code CLI 2.x 可以直接连 `/v1/messages`（已用 `claude -p` 验证，包括 Bash 工具往返、`/context` 和流式）：
+
+```bash
+# gateway.toml（或环境变量 MODEL_ALIASES）：把 Claude 模型名映射到 Cursor 模型
+#   model_aliases = "claude-haiku-*=composer-2.5, claude-*=composer-2.5"
+export ANTHROPIC_BASE_URL=http://127.0.0.1:8787
+export ANTHROPIC_API_KEY=cgk_你的key          # 以 x-api-key 发送
+claude -p "Reply with PONG"
+```
+
+网关对 Claude Code 请求的处理：
+
+- 带 `anthropic-beta` 的 `POST /v1/messages?beta=true`：所有 beta 标志和未知顶层字段（`context_management`、`safeguards`、`output_config` 等）都会接受并忽略。
+- Claude 模型名（`claude-opus-*`、`claude-sonnet-*`，以及后台任务用的 `claude-haiku-*`）经过 `model_aliases` 映射：先匹配先生效，`*` 是通配符，对所有接口生效；没有匹配时原样查 Cursor 模型目录，查不到会返回 `not_found_error`。
+- `messages` 里的 `system` 消息会作为 `[system]` 上下文并入前一条 user / tool 消息，这样工具轮次能继续命中停车的 Cursor 会话，不必重放整个 transcript。
+- `thinking` / `output_config.effort` 映射为尽力而为的推理档位（effort `low`–`max`；`budget_tokens` <4k → low，<16k → medium，否则 high；`disabled` → 最低档）。没有 effort 参数的模型忽略。
+- 历史里的服务端工具块（`server_tool_use`、`web_search_tool_result` 等）会跳过，`cache_control` 会忽略。
+- `POST /v1/messages/count_tokens` 返回**粗略的本地估算**（响应头 `x-token-count-estimated: true`；约 4 个 ASCII 字符或 1 个非 ASCII 字符算 1 个 token），Claude Code 的 `/context` 会用到。设置 `anthropic_count_tokens = "off"`（环境变量 `ANTHROPIC_COUNT_TOKENS`）则返回 404，Claude Code 会退回自己的估算。
+- `HEAD /api/hello`（Claude Code 的连通性探测）返回 404，Claude Code 能容忍。
+
 ### Codex（`POST /v1/responses`）
 
 把 Codex 指到本网关的 `/v1`。压缩（`/compact`）请求可被接受：Responses 接受 `parallel_tool_calls: false` 和 `tools: []`（该开关会被忽略，Cursor 不区分）。Chat Completions 对 `parallel_tool_calls: false` 仍 400。
 
-Responses 还会收下并忽略采样参数（`temperature`、`top_p` 等）以及未知顶层字段（`client_metadata`、`include` 等）。Codex 的 `custom` 工具（`apply_patch`）往返发 `custom_tool_call` 和自由格式 `input`。嵌套 `namespace` 工具摊平成 function。没有 name 的 hosted 工具（`web_search` 等）直接丢掉。上一轮的 assistant 正文和 `function_call` 会并成一条消息，避免工具结果 400。`previous_response_id` 续同一个 Cursor Agent。
+Responses 还会收下并忽略采样参数（`temperature`、`top_p` 等）以及未知顶层字段（`client_metadata`、`include` 等）。Codex 的 `custom` 工具（`apply_patch`）往返发 `custom_tool_call` 和自由格式 `input`。嵌套 `namespace` 工具摊平成 function。没有 name 的 hosted 工具（`web_search` 等）直接丢掉。上一轮的 assistant 正文和 `function_call` 会并成一条消息，避免工具结果 400。`previous_response_id` 续同一个 Cursor Agent。`reasoning.effort` 按尽力而为处理：模型有 effort 参数时映射过去（精确匹配，否则取最接近的档位，如 `xhigh` → `high`、`minimal` → `low`），模型没有该参数时忽略，所以 Codex 的默认请求不会 400。顶层 `reasoning_effort` 仍与 Chat Completions 一样严格校验。
 
 ### OpenCode
 

@@ -5,6 +5,10 @@
 
 export interface AppConfig {
   corsAllowOrigins: string[];
+  /** `POST /v1/messages/count_tokens`: rough local estimate, or 404 when off. */
+  anthropicCountTokens: "estimate" | "off";
+  /** `model_aliases` rules applied to every request's `model` before catalog lookup. */
+  modelAliases: Array<{ pattern: string; target: string; matcher: RegExp }>;
   cursorApiKey: string;
   gatewayHost: string;
   gatewayPort: number;
@@ -179,7 +183,11 @@ export interface ParsedChatRequest {
   params?: ModelParam[];
   variant?: string;
   reasoning_effort?: string;
-  /** A non-strict effort preference from a Responses request. */
+  /**
+   * Best-effort reasoning level from clients that always send one (Responses
+   * `reasoning.effort`, Anthropic `thinking` / `output_config.effort`). Applied
+   * only when the model has an effort parameter; never causes a 400.
+   */
   reasoning_effort_hint?: string;
   verbosity?: string;
   fast?: string;

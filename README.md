@@ -163,23 +163,64 @@ curl -s http://127.0.0.1:8787/v1/chat/completions \
 
 ## Client integration
 
-**Auth:** `Authorization: Bearer cgk_...` or `X-Api-Key: cgk_...`
+**Auth:** `Authorization: Bearer cgk_...` or `X-Api-Key: cgk_...` (Anthropic clients send `x-api-key`)
 
 | Method | Path | Typical clients |
 |--------|------|-----------------|
 | `POST` | `/v1/chat/completions` | OpenAI SDK, OpenCode `"npm": "@ai-sdk/openai-compatible"` |
 | `POST` | `/v1/responses` | Codex, OpenCode `"npm": "@ai-sdk/openai"` |
+| `POST` | `/v1/messages` | Anthropic SDK, Claude-compatible clients |
 | `GET` | `/v1/models`, `/v1/models/{id}` | Model list |
 
 Streaming (`stream: true`), vision (`image_url`, plus OpenCode `image` / image `file` parts), thinking (`delta.reasoning_content`), and Cursor knobs (`params`, `variant`, `reasoning_effort`, …) are supported. `variant` matches a unique catalog display name, or an effort/reasoning/fast value when Cursor repeats the same display name (OpenCode `--variant high` does not send this field on `@ai-sdk/openai-compatible`; send `variant` or `reasoning_effort` on the body). OpenAI tool calling (`tools` / `tool_calls` / `role: tool`) is supported so clients like OpenCode can run tools locally. Cursor shell/file tools stay off; MCP is enabled only to surface those client tools. Audio is not. `temperature` / `top_p` / `seed` 400; `max_tokens` is accepted. `conversation_id` (or `metadata.conversation_id`) resumes the same Cursor agent for that client key; IDs are limited to 512 UTF-8 bytes and the newest 1,000 mappings per client key are retained. Tool parks time out after `park_timeout_ms` (default 300000); after a gateway restart, tool results continue from the HTTP transcript.
 
 The Cursor SDK accepts each turn as one prompt rather than native OpenAI role messages. This gateway serializes `system` / `developer` / `user` roles into transcript text, so application-supplied `system` or `developer` messages are context, not a hard security boundary against hostile user content.
 
+### Anthropic Messages (`POST /v1/messages`)
+
+Point Anthropic SDKs and Claude-compatible tools at the gateway root (the SDK appends `/v1/messages` itself):
+
+```text
+ANTHROPIC_BASE_URL=http://127.0.0.1:8787
+ANTHROPIC_API_KEY=<your cgk_ client key>      # sent as x-api-key
+```
+
+- `system` (string or text blocks), `text` / `image` (base64 or URL) blocks, `stream: true` (`message_start` → `content_block_*` → `message_delta` → `message_stop`), and thinking output as `thinking` blocks.
+- Client tools: `tools[].input_schema` → `tool_use` blocks with `stop_reason: "tool_use"`; send `tool_result` blocks back in the next user turn (`is_error: true` is passed to the model as an error result). Extra text next to `tool_result` is appended to the last result. Server tools without `input_schema` (`web_search_…`, `bash_…`) are dropped.
+- `tool_choice`: `auto`, `tool`, `none`; `any` degrades to `auto` because Cursor cannot force a call.
+- Ignored: `temperature`, `top_p`, `top_k`, `thinking`, `output_config`, `context_management`, `service_tier`. Unknown top-level fields are ignored. Rejected: non-empty `stop_sequences`, `document` blocks.
+- Cursor knobs (`params`, `variant`, `reasoning_effort`, `verbosity`, `fast`, `optimize_for`) and `conversation_id` / `metadata.conversation_id` work as on Chat Completions.
+- Errors use the Anthropic shape: `{"type":"error","error":{"type":"invalid_request_error","message":"…"}}`.
+- `usage.input_tokens` / `output_tokens` / `cache_read_input_tokens` / `cache_creation_input_tokens` come from Cursor token usage; `cursor.cost` is included on non-stream responses.
+- `POST /v1/messages/count_tokens` returns a rough estimate (see Claude Code below).
+
+### Claude Code
+
+Claude Code CLI 2.x works against `/v1/messages` (verified with `claude -p`, including a Bash tool round, `/context`, and streaming):
+
+```bash
+# gateway.toml (or env MODEL_ALIASES): map Claude model names onto Cursor models
+#   model_aliases = "claude-haiku-*=composer-2.5, claude-*=composer-2.5"
+export ANTHROPIC_BASE_URL=http://127.0.0.1:8787
+export ANTHROPIC_API_KEY=cgk_YOUR_KEY          # sent as x-api-key
+claude -p "Reply with PONG"
+```
+
+What the gateway does with Claude Code traffic:
+
+- `POST /v1/messages?beta=true` with `anthropic-beta` flags: every beta flag and unknown top-level field (`context_management`, `safeguards`, `output_config`, …) is accepted and ignored.
+- Claude model ids (`claude-opus-*`, `claude-sonnet-*`, `claude-haiku-*` for background tasks) go through `model_aliases`. First match wins, `*` is a wildcard, and it applies to every endpoint. Without a match the id goes to the Cursor catalog unchanged and fails with `not_found_error`.
+- `system` messages inside `messages` are folded into the preceding user / tool turn as `[system]` context, so tool rounds keep matching the parked Cursor session instead of replaying the transcript.
+- `thinking` / `output_config.effort` become a best-effort reasoning level (effort `low`–`max`; `budget_tokens` <4k → low, <16k → medium, otherwise high; `disabled` → lowest). Models without an effort parameter ignore it.
+- Server tool blocks (`server_tool_use`, `web_search_tool_result`, …) in history are skipped, and `cache_control` is ignored.
+- `POST /v1/messages/count_tokens` returns a **rough local estimate** (`x-token-count-estimated: true`; ~4 ASCII chars or 1 non-ASCII char per token). Claude Code uses it for `/context`. Set `anthropic_count_tokens = "off"` (env `ANTHROPIC_COUNT_TOKENS`) to return 404 instead; Claude Code then falls back to its own estimate.
+- `HEAD /api/hello` (a Claude Code connectivity probe) gets 404, which Claude Code tolerates.
+
 ### Codex (`POST /v1/responses`)
 
 Point Codex at this gateway's `/v1`. Compaction (`/compact`) requests are accepted: Responses accepts `parallel_tool_calls: false` and `tools: []` (the flag is ignored; Cursor does not distinguish it). Chat Completions still 400s `parallel_tool_calls: false`.
 
-Also accepted on Responses and ignored: sampling knobs (`temperature`, `top_p`, …) and unknown top-level fields (`client_metadata`, `include`, …). Codex `custom` tools (`apply_patch`) round-trip as `custom_tool_call` with freeform `input`. Nested `namespace` tools flatten to functions. Unnamed hosted tools (`web_search`, …) are dropped. Replayed assistant text next to `function_call` items is merged so the following tool-result round stays valid. `previous_response_id` resumes the same Cursor agent.
+Also accepted on Responses and ignored: sampling knobs (`temperature`, `top_p`, …) and unknown top-level fields (`client_metadata`, `include`, …). Codex `custom` tools (`apply_patch`) round-trip as `custom_tool_call` with freeform `input`. Nested `namespace` tools flatten to functions. Unnamed hosted tools (`web_search`, …) are dropped. Replayed assistant text next to `function_call` items is merged so the following tool-result round stays valid. `previous_response_id` resumes the same Cursor agent. `reasoning.effort` is best-effort: it maps to the model's effort parameter when the model has one (exact value, else the nearest level, e.g. `xhigh` → `high`, `minimal` → `low`) and is ignored for models without one, so Codex defaults never 400. A top-level `reasoning_effort` stays strict like on Chat Completions.
 
 ### OpenCode
 
