@@ -26,6 +26,7 @@ import {
 import { getConversationAgentId, pruneConversations, upsertConversation } from "./db.js";
 import { conversationBusyError, GatewayError, invalidRequest } from "./errors.js";
 import { logError, logInfo } from "./log.js";
+import type { CursorKeyPool } from "./keypool.js";
 import { imagesOfLastUser, renderTranscript } from "./openai.js";
 
 const DEFAULT_PARK_TIMEOUT_MS = 5 * 60 * 1000;
@@ -212,6 +213,8 @@ const activeConversationRequests = new Map<string, symbol>();
 
 interface RunChatTurnOptions {
   apiKey: string;
+  /** When set, new agents rotate across pooled keys and fail over on auth / rate-limit errors. */
+  keyPool?: CursorKeyPool;
   apiKeyId: string;
   workspaceDir: string;
   request: ParsedChatRequest;
@@ -221,6 +224,8 @@ interface RunChatTurnOptions {
   parkTimeoutMs?: number;
   db?: DatabaseSync;
 }
+
+type TurnOptions = Omit<RunChatTurnOptions, "onClaimed">;
 
 class Deferred<T> {
   readonly promise: Promise<T>;
@@ -475,20 +480,14 @@ async function runClaimedChatTurn(
 
 async function resumeUserTurn(
   turn: Extract<ChatTurnKind, { kind: "user" }>,
-  options: {
-    apiKey: string;
-    apiKeyId: string;
-    workspaceDir: string;
-    request: ParsedChatRequest;
-    abortSignal: AbortSignal;
-    sink?: ChatTurnSink;
-    parkTimeoutMs?: number;
-    db?: DatabaseSync;
-  },
+  options: TurnOptions,
   storedAgentId: string | undefined,
 ): Promise<CursorChatResult> {
   if (!storedAgentId) {
     return await startNewSession(turn, options);
+  }
+  if (options.keyPool) {
+    options = { ...options, apiKey: options.keyPool.pick() ?? options.apiKey };
   }
   const model = await resolveChatModel(options.apiKey, options.request);
   const releaseCapacity = await reserveSessionCapacity(options.apiKeyId);
@@ -530,35 +529,43 @@ async function resumeUserTurn(
 
 async function startNewSession(
   turn: Extract<ChatTurnKind, { kind: "user" }>,
-  options: {
-    apiKey: string;
-    apiKeyId: string;
-    workspaceDir: string;
-    request: ParsedChatRequest;
-    abortSignal: AbortSignal;
-    sink?: ChatTurnSink;
-    parkTimeoutMs?: number;
-    db?: DatabaseSync;
-  },
+  options: TurnOptions,
 ): Promise<CursorChatResult> {
   const prompt =
     turn.stem.length === 0 ? turn.user.content : renderTranscript([...turn.stem, turn.user]);
   return await startAgentSession(prompt, options);
 }
 
-async function startAgentSession(
-  prompt: string,
-  options: {
-    apiKey: string;
-    apiKeyId: string;
-    workspaceDir: string;
-    request: ParsedChatRequest;
-    abortSignal: AbortSignal;
-    sink?: ChatTurnSink;
-    parkTimeoutMs?: number;
-    db?: DatabaseSync;
-  },
-): Promise<CursorChatResult> {
+async function startAgentSession(prompt: string, options: TurnOptions): Promise<CursorChatResult> {
+  const pool = options.keyPool;
+  if (!pool) {
+    return await startAgentSessionWithKey(prompt, options);
+  }
+  // Fail over only while nothing has reached the client; afterwards a retry would duplicate output.
+  let emitted = false;
+  const sink: ChatTurnSink | undefined = options.sink
+    ? {
+        onText: async (text) => {
+          if (text !== "") emitted = true;
+          await options.sink?.onText(text);
+        },
+        onThinking: async (text) => {
+          if (text !== "") emitted = true;
+          await options.sink?.onThinking(text);
+        },
+        onToolCalls: async (calls) => {
+          emitted = true;
+          await options.sink?.onToolCalls(calls);
+        },
+      }
+    : undefined;
+  return await pool.run(
+    async (apiKey) => await startAgentSessionWithKey(prompt, { ...options, apiKey, sink }),
+    () => !emitted && !options.abortSignal.aborted,
+  );
+}
+
+async function startAgentSessionWithKey(prompt: string, options: TurnOptions): Promise<CursorChatResult> {
   const model = await resolveChatModel(options.apiKey, options.request);
   const releaseCapacity = await reserveSessionCapacity(options.apiKeyId);
   const session = emptySession(options, model.params);

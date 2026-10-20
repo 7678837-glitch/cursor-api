@@ -18,6 +18,7 @@ const DEFAULT_SSE_KEEPALIVE_MS = 15_000;
 const DEFAULT_AUTH_FAILURE_LIMIT = 20;
 const DEFAULT_MAX_LIVE_SESSIONS = 256;
 const DEFAULT_CONVERSATION_TTL_DAYS = 30;
+const DEFAULT_CURSOR_KEY_COOLDOWN_MS = 60_000;
 const CONFIG_FILE_NAME = "gateway.toml";
 
 const EMPTY_CONFIG_TEMPLATE = `# cursor-api configuration (auto-created in container)
@@ -29,6 +30,11 @@ port = 8787
 cursor_api_key = ""
 admin_access_key = ""
 api_key_pepper = ""
+
+# Extra Cursor keys for rotation / failover (comma-separated):
+# cursor_api_keys = "key-2,key-3"
+# cursor_key_cooldown_ms = 60000
+# cursor_key_strategy = "round_robin"   # or "least_active"
 
 # park_timeout_ms = 300000
 # max_live_sessions = 256        # running + parked Cursor sessions kept in memory
@@ -82,13 +88,7 @@ export function loadConfig(
 
   return {
     corsAllowOrigins: parseCorsOrigins(env.CORS_ALLOW_ORIGINS ?? tomlString(toml, "cors_allow_origins") ?? "*"),
-    cursorApiKey: requireSecret(
-      env,
-      "CURSOR_API_KEY",
-      tomlString(toml, "cursor_api_key"),
-      configFile,
-      "cursor_api_key",
-    ),
+    ...cursorKeys(env, toml, configFile),
     adminAccessKey: requireSecret(
       env,
       "ADMIN_ACCESS_KEY",
@@ -186,6 +186,19 @@ export function loadConfig(
       DEFAULT_CONVERSATION_TTL_DAYS,
       { min: 1, max: 3650 },
     ),
+    cursorKeyStrategy: parseKeyStrategy(
+      pickConfigured(env, "CURSOR_KEY_STRATEGY", tomlString(toml, "cursor_key_strategy"), "cursor_key_strategy"),
+    ),
+    cursorKeyCooldownMs: parseBoundedInt(
+      pickConfigured(
+        env,
+        "CURSOR_KEY_COOLDOWN_MS",
+        intToString(tomlInt(toml, "cursor_key_cooldown_ms")),
+        "cursor_key_cooldown_ms",
+      ),
+      DEFAULT_CURSOR_KEY_COOLDOWN_MS,
+      { min: 1_000, max: 86_400_000 },
+    ),
     parkTimeoutMs: parseBoundedInt(
       pickConfigured(
         env,
@@ -243,6 +256,40 @@ function parseCountTokensMode(configured: { value: string | undefined; source: s
   if (value === undefined || value === "estimate") return "estimate";
   if (value === "off") return "off";
   throw new Error(`${configured.source} must be "estimate" or "off" (got ${JSON.stringify(configured.value)})`);
+}
+
+/**
+ * `cursor_api_key` plus optional `cursor_api_keys` (comma-separated) form the
+ * upstream key pool. At least one key is required; duplicates are dropped.
+ */
+function cursorKeys(
+  env: NodeJS.ProcessEnv,
+  toml: TomlTable,
+  configFile: string,
+): { cursorApiKey: string; cursorApiKeys: string[] } {
+  const primary = pickString(env.CURSOR_API_KEY, tomlString(toml, "cursor_api_key"));
+  const extra = pickString(env.CURSOR_API_KEYS, tomlString(toml, "cursor_api_keys"));
+  const keys: string[] = [];
+  for (const candidate of [primary, ...(extra ?? "").split(",")]) {
+    const key = optionalTrimmed(candidate);
+    if (key !== undefined && !keys.includes(key)) keys.push(key);
+  }
+  const first = keys[0];
+  if (first === undefined) {
+    throw new Error(
+      `Missing cursor_api_key. Set environment variable CURSOR_API_KEY (or CURSOR_API_KEYS) or add it to ${configFile}`,
+    );
+  }
+  return { cursorApiKey: first, cursorApiKeys: keys };
+}
+
+function parseKeyStrategy(configured: { value: string | undefined; source: string }): "round_robin" | "least_active" {
+  const value = optionalTrimmed(configured.value)?.toLowerCase().replace("-", "_");
+  if (value === undefined || value === "round_robin") return "round_robin";
+  if (value === "least_active") return "least_active";
+  throw new Error(
+    `${configured.source} must be "round_robin" or "least_active" (got ${JSON.stringify(configured.value)})`,
+  );
 }
 
 function requireSecret(

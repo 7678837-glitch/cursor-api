@@ -107,6 +107,9 @@ detailed = false
 | `[logs].detailed` | Store request/response JSON for admin modal (default **false**). Stores prompts in **plaintext** under `./data` — keep the volume private |
 | `[logs].detailed_max_bytes` | Per-field cap for request/response JSON (4KiB–1MiB, default 64KiB) |
 | `[logs].max_detail_bytes` | Cap total UTF-8 bytes of `model` + detail columns (default 256MiB); oldest rows dropped first |
+| `cursor_api_keys` | Optional extra Cursor keys, comma-separated (env `CURSOR_API_KEYS`). Together with `cursor_api_key` they form a pool: new agents rotate round-robin across healthy keys, and a key that returns an upstream auth or rate-limit error is cooled down while the request fails over to the next key. Failover stops once any output has been streamed to the client. Pending tool rounds continue on the agent (and key) that started them |
+| `cursor_key_cooldown_ms` | Cooldown after a rate limit (default **60000**, 1s–24h). Repeated failures double it, up to x8. Auth failures cool down for 15 minutes |
+| `cursor_key_strategy` | `round_robin` (default) rotates keys evenly. `least_active` sends each request to the healthy key with the fewest in-flight requests, with ties rotating. `GET /admin/api/cursor-keys` reports `active_requests`, `successes`, `failures` and `last_used_at` per key |
 | `park_timeout_ms` | How long a pending tool round stays in memory (default **300000**). After a restart, the next tool-result request continues from the HTTP transcript |
 | `max_live_sessions` | Maximum running and parked Cursor sessions in memory (default **256**); a pending creation counts toward the limit |
 | `conversation_ttl_days` | Drop unused persisted `conversation_id` mappings after this many days (default **30**) |
@@ -259,7 +262,7 @@ print(client.chat.completions.create(
 
 Browser console at `/admin/`: overview (including a 7-day call chart), client keys (create / disable / enable / delete), request logs, and system logs.
 
-Admin API: `/admin/api/*` with the same `admin_access_key` (`Authorization: Bearer` or `X-Management-Key`). `DELETE /admin/api/keys/{id}` removes a client key and keeps its request logs. `GET /admin/api/system-logs` lists gateway stdout/stderr events stored in SQLite.
+Admin API: `/admin/api/*` with the same `admin_access_key` (`Authorization: Bearer` or `X-Management-Key`). `DELETE /admin/api/keys/{id}` removes a client key and keeps its request logs. `GET /admin/api/system-logs` lists gateway stdout/stderr events stored in SQLite. `GET /admin/api/cursor-keys` shows the upstream key pool (sha256 fingerprint, `healthy` / `cooling_down`, failure counters; keys are never returned). The overview includes `cursor_keys: {total, healthy}`.
 
 ---
 

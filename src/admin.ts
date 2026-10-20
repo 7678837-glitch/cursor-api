@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { DatabaseSync } from "node:sqlite";
 import type { ApiKeyRow, AppConfig } from "./contracts.js";
+import type { CursorKeyPool } from "./keypool.js";
 import { generateClientKey, requireAdminKey } from "./auth.js";
 import {
   disableApiKey,
@@ -31,7 +32,7 @@ export async function handleAdminRequest(
   req: IncomingMessage,
   res: ServerResponse,
   url: URL,
-  ctx: { config: AppConfig; db: DatabaseSync },
+  ctx: { config: AppConfig; db: DatabaseSync; keyPool: CursorKeyPool },
 ): Promise<boolean> {
   if (!url.pathname.startsWith(ADMIN_PREFIX)) {
     return false;
@@ -50,7 +51,7 @@ async function dispatch(
   req: IncomingMessage,
   res: ServerResponse,
   url: URL,
-  ctx: { config: AppConfig; db: DatabaseSync },
+  ctx: { config: AppConfig; db: DatabaseSync; keyPool: CursorKeyPool },
 ): Promise<void> {
   const method = req.method ?? "";
   const pathname = url.pathname;
@@ -63,7 +64,7 @@ async function dispatch(
     const stats = requestStats(ctx.db);
     let upstream: "ok" | "unavailable" = "ok";
     try {
-      await listCursorModels(ctx.config.cursorApiKey);
+      await ctx.keyPool.run((apiKey) => listCursorModels(apiKey));
     } catch {
       upstream = "unavailable";
     }
@@ -74,6 +75,7 @@ async function dispatch(
       upstream,
       account: peekCursorAccount(),
       sessions: { ...sessionStats(), conversations_stored: countConversations(ctx.db) },
+      cursor_keys: summarizeKeys(ctx.keyPool),
       keys: {
         total: keys.length,
         enabled: keys.filter((key) => key.enabled === 1).length,
@@ -89,6 +91,15 @@ async function dispatch(
         detailed_max_bytes: ctx.config.logDetailedMaxBytes,
         max_detail_bytes: ctx.config.logMaxDetailBytes,
       },
+    });
+    return;
+  }
+
+  if (method === "GET" && pathname === "/admin/api/cursor-keys") {
+    sendJson(res, 200, {
+      strategy: ctx.keyPool.strategy,
+      cooldown_ms: ctx.config.cursorKeyCooldownMs,
+      keys: ctx.keyPool.snapshot(),
     });
     return;
   }
@@ -313,4 +324,9 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function notFound(message: string): GatewayError {
   return new GatewayError(404, "not_found", message, "invalid_request_error");
+}
+
+function summarizeKeys(pool: CursorKeyPool): { total: number; healthy: number } {
+  const keys = pool.snapshot();
+  return { total: keys.length, healthy: keys.filter((key) => key.state === "healthy").length };
 }

@@ -10,6 +10,12 @@ export interface AppConfig {
   /** `model_aliases` rules applied to every request's `model` before catalog lookup. */
   modelAliases: Array<{ pattern: string; target: string; matcher: RegExp }>;
   cursorApiKey: string;
+  /** Upstream key pool (`cursor_api_key` + `cursor_api_keys`), deduplicated, at least one. */
+  cursorApiKeys: string[];
+  /** Cooldown after an upstream rate limit before a key is tried again. */
+  cursorKeyCooldownMs: number;
+  /** Key selection: `round_robin` (default) or `least_active`. */
+  cursorKeyStrategy: "round_robin" | "least_active";
   gatewayHost: string;
   gatewayPort: number;
   adminAccessKey: string;
