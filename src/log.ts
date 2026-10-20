@@ -93,16 +93,18 @@ const SECRET_RULES: Rule[] = [
   },
   // `Bearer <value>` (any 8+ chars) and `Basic <base64>` (needs base64 shape, so prose like
   // "Basic authentication" stays readable).
+  // Minimum lengths are written `X{n}X*`, not `X{n,}`: V8 keeps a backtrack entry per character for
+  // `{n,}` and throws RangeError on multi-MB runs, while a plain `*` loop does not (r3 review R3-4).
   {
-    pattern: /\b(Bearer)(\s+)(?!\[redacted\])[A-Za-z0-9._~+/=-]{8,}/gi,
+    pattern: /\b(Bearer)(\s+)(?!\[redacted\])[A-Za-z0-9._~+/=-]{8}[A-Za-z0-9._~+/=-]*/gi,
     replace: (_match, scheme, space) => `${scheme}${space}${REDACTED}`,
   },
   {
-    pattern: /\b(Basic)(\s+)(?!\[redacted\])(?:[A-Za-z0-9+/]{20,}={0,2}|(?=[A-Za-z0-9+/]*[0-9+/])[A-Za-z0-9+/]{4,}={0,2}|[A-Za-z0-9+/]{2,}={1,2})(?![A-Za-z0-9+/=])/g,
+    pattern: /\b(Basic)(\s+)(?!\[redacted\])(?:[A-Za-z0-9+/]{20}[A-Za-z0-9+/]*={0,2}|(?=[A-Za-z0-9+/]*[0-9+/])[A-Za-z0-9+/]{4}[A-Za-z0-9+/]*={0,2}|[A-Za-z0-9+/]{2}[A-Za-z0-9+/]*={1,2})(?![A-Za-z0-9+/=])/g,
     replace: (_match, scheme, space) => `${scheme}${space}${REDACTED}`,
   },
-  { pattern: /\bcgk_[A-Za-z0-9_-]{6,}/g, replace: () => REDACTED },
-  { pattern: /\b(?:sk|key|crsr|cursor)[-_][A-Za-z0-9_-]{20,}/g, replace: () => REDACTED },
+  { pattern: /\bcgk_[A-Za-z0-9_-]{6}[A-Za-z0-9_-]*/g, replace: () => REDACTED },
+  { pattern: /\b(?:sk|key|crsr|cursor)[-_][A-Za-z0-9_-]{20}[A-Za-z0-9_-]*/g, replace: () => REDACTED },
   // `api_key=…`, `access_token=…`, `client_secret: …`, `"refresh_token":"…"`, `password=abc12`.
   // No left word boundary: `_` is a word character, so `\btoken` would miss `access_token`.
   {
@@ -116,8 +118,13 @@ const SECRET_RULES: Rule[] = [
 
 export function scrubSecrets(text: string): string {
   let out = text;
-  for (const rule of SECRET_RULES) {
-    out = out.replace(rule.pattern, rule.replace as (substring: string, ...args: unknown[]) => string);
+  try {
+    for (const rule of SECRET_RULES) {
+      out = out.replace(rule.pattern, rule.replace as (substring: string, ...args: unknown[]) => string);
+    }
+  } catch {
+    // Fail closed: if the regex engine gives up on some input (e.g. a RangeError), log nothing of it.
+    return REDACTED;
   }
   return out;
 }

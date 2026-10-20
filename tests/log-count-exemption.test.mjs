@@ -281,3 +281,24 @@ test("a credential word after the truncation point still masks the whole value",
   const plain = sanitizeFields({ detail: `${big} done` }).detail;
   assert.ok(plain.endsWith("…[truncated]") && plain.startsWith("lorem"), plain.slice(0, 20));
 });
+
+// ---- r3 review R3-4: uncapped scrubSecrets must not throw on multi-MB secret-shaped runs ----
+
+test("scrubSecrets handles 16 MiB secret-shaped runs without RangeError and masks them", () => {
+  const n = 16 * 1024 * 1024;
+  const shapes = {
+    key_dash: "key-".repeat(n / 4),
+    long_cgk: `cgk_${"A".repeat(n)}`,
+    sk_run: `sk-${"a".repeat(n)}`,
+    bearer_run: `Bearer ${"a".repeat(n)}`,
+    basic_run: `Basic ${"A".repeat(n)}`,
+  };
+  for (const [name, text] of Object.entries(shapes)) {
+    let out;
+    assert.doesNotThrow(() => {
+      out = scrubSecrets(text);
+    }, name);
+    assert.ok(out.length < 64, `${name}: ${out.length} chars left`);
+    assert.ok(out.endsWith(REDACTED), `${name}: ${out.slice(0, 40)}`);
+  }
+});
