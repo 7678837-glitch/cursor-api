@@ -319,7 +319,7 @@ git clone https://github.com/xjoker/cursor-api.git && cd cursor-api
 npm ci && npm run dev
 ```
 
-快速单元测试用 `npm run test:unit`；`npm test` 还会运行回环 HTTP 鉴权冒烟测试。
+快速单元测试用 `npm run test:unit`；`npm test` 还会运行回环 HTTP 鉴权冒烟测试。`npm run test:tmpdirs` 会用独立的 `TMPDIR` 跑测试，若残留任何 `cursor-api-*` 临时目录则失败（加 `-- --exclude http-smoke` 可跳过冒烟测试）。
 
 需 Node **22.13+** 与 `data/config/gateway.toml`。本地编译镜像见 [`docker-compose.yml`](./docker-compose.yml)。构建时传入 git SHA，`/health` 的 `git_commit` 才不是 `unknown`：
 

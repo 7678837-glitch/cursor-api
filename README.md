@@ -317,7 +317,7 @@ git clone https://github.com/xjoker/cursor-api.git && cd cursor-api
 npm ci && npm run dev
 ```
 
-Use `npm run test:unit` for the fast unit suite. `npm test` also runs the loopback HTTP authentication smoke test.
+Use `npm run test:unit` for the fast unit suite. `npm test` also runs the loopback HTTP authentication smoke test. `npm run test:tmpdirs` runs the suite against a private `TMPDIR` and fails if any `cursor-api-*` temp directory is left behind (pass `-- --exclude http-smoke` to skip the smoke test).
 
 Requires Node **22.13+** and `data/config/gateway.toml`. See [`docker-compose.yml`](./docker-compose.yml) to build the image locally. Pass the git SHA at image build time so `/health` `git_commit` is not `unknown`:
 
