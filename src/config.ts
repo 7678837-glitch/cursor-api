@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { logWarn } from "./log.js";
 import type { AppConfig } from "./contracts.js";
+import { parseModelAliases } from "./model-alias.js";
 
 const MAX_BODY_BYTES = 4_194_304;
 const DEFAULT_HOST = "127.0.0.1";
@@ -13,6 +14,11 @@ const DEFAULT_LOG_DETAILED = false;
 const DEFAULT_LOG_DETAILED_MAX_BYTES = 65_536;
 const DEFAULT_LOG_MAX_DETAIL_BYTES = 268_435_456; // 256 MiB across all detail columns
 const DEFAULT_PARK_TIMEOUT_MS = 300_000;
+const DEFAULT_SSE_KEEPALIVE_MS = 15_000;
+const DEFAULT_AUTH_FAILURE_LIMIT = 20;
+const DEFAULT_MAX_LIVE_SESSIONS = 256;
+const DEFAULT_CONVERSATION_TTL_DAYS = 30;
+const DEFAULT_CURSOR_KEY_COOLDOWN_MS = 60_000;
 const CONFIG_FILE_NAME = "gateway.toml";
 
 const EMPTY_CONFIG_TEMPLATE = `# cursor-api configuration (auto-created in container)
@@ -25,9 +31,23 @@ cursor_api_key = ""
 admin_access_key = ""
 api_key_pepper = ""
 
+# Extra Cursor keys for rotation / failover (comma-separated):
+# cursor_api_keys = "key-2,key-3"
+# cursor_key_cooldown_ms = 60000
+# cursor_key_strategy = "round_robin"   # or "least_active"
+
 # park_timeout_ms = 300000
-# auth_failure_limit = 20   # failed auth attempts per client address per minute; 0 = off
+# max_live_sessions = 256        # running + parked Cursor sessions kept in memory
+# conversation_ttl_days = 30     # drop conversation_id mappings unused this long
+# ignore_sampling_params = false  # drop unsupported Chat Completions sampling knobs
+# sse_keepalive_ms = 15000       # 0 disables SSE comment heartbeats
+# auth_failure_limit = 20        # failed auth attempts per address per minute; 0 = off
+# cors_allow_origins = "*"       # comma-separated HTTP origins; empty disables CORS
 # trusted_proxies = ""     # reverse proxy IPs/CIDRs whose X-Forwarded-For is trusted
+# POST /v1/messages/count_tokens: "estimate" (rough local count) or "off" (404)
+# anthropic_count_tokens = "off"
+# Map client model names onto Cursor models (first match wins, * is a wildcard):
+# model_aliases = "claude-opus-*=composer-2.5, claude-sonnet-*=composer-2.5, claude-haiku-*=composer-2.5"
 
 [logs]
 retention_days = 7
@@ -67,13 +87,8 @@ export function loadConfig(
   warnIfHostOverridden(env, tomlString(toml, "host"), configFile, warn);
 
   return {
-    cursorApiKey: requireSecret(
-      env,
-      "CURSOR_API_KEY",
-      tomlString(toml, "cursor_api_key"),
-      configFile,
-      "cursor_api_key",
-    ),
+    corsAllowOrigins: parseCorsOrigins(env.CORS_ALLOW_ORIGINS ?? tomlString(toml, "cors_allow_origins") ?? "*"),
+    ...cursorKeys(env, toml, configFile),
     adminAccessKey: requireSecret(
       env,
       "ADMIN_ACCESS_KEY",
@@ -87,6 +102,13 @@ export function loadConfig(
       tomlString(toml, "api_key_pepper"),
       configFile,
       "api_key_pepper",
+    ),
+    anthropicCountTokens: parseCountTokensMode(
+      pickConfigured(env, "ANTHROPIC_COUNT_TOKENS", tomlString(toml, "anthropic_count_tokens"), "anthropic_count_tokens"),
+    ),
+    modelAliases: parseModelAliases(
+      pickString(env.MODEL_ALIASES, tomlString(toml, "model_aliases")),
+      "model_aliases",
     ),
     gatewayHost: pickString(env.GATEWAY_HOST, tomlString(toml, "host")) ?? defaultHost,
     gatewayPort: parsePositiveInt(
@@ -140,6 +162,43 @@ export function loadConfig(
       DEFAULT_LOG_MAX_DETAIL_BYTES,
       { min: 1_048_576, max: 10_737_418_240 },
     ),
+    ignoreSamplingParams: parseBoolean(
+      pickConfigured(env, "IGNORE_SAMPLING_PARAMS", boolToString(tomlBool(toml, "ignore_sampling_params")), "ignore_sampling_params"),
+      false,
+    ),
+    sseKeepaliveMs: parseOptionalInterval(
+      pickConfigured(env, "SSE_KEEPALIVE_MS", intToString(tomlInt(toml, "sse_keepalive_ms")), "sse_keepalive_ms"),
+      DEFAULT_SSE_KEEPALIVE_MS,
+      { min: 1_000, max: 600_000 },
+    ),
+    maxLiveSessions: parseBoundedInt(
+      pickConfigured(env, "MAX_LIVE_SESSIONS", intToString(tomlInt(toml, "max_live_sessions")), "max_live_sessions"),
+      DEFAULT_MAX_LIVE_SESSIONS,
+      { min: 1, max: 100_000 },
+    ),
+    conversationTtlDays: parseBoundedInt(
+      pickConfigured(
+        env,
+        "CONVERSATION_TTL_DAYS",
+        intToString(tomlInt(toml, "conversation_ttl_days")),
+        "conversation_ttl_days",
+      ),
+      DEFAULT_CONVERSATION_TTL_DAYS,
+      { min: 1, max: 3650 },
+    ),
+    cursorKeyStrategy: parseKeyStrategy(
+      pickConfigured(env, "CURSOR_KEY_STRATEGY", tomlString(toml, "cursor_key_strategy"), "cursor_key_strategy"),
+    ),
+    cursorKeyCooldownMs: parseBoundedInt(
+      pickConfigured(
+        env,
+        "CURSOR_KEY_COOLDOWN_MS",
+        intToString(tomlInt(toml, "cursor_key_cooldown_ms")),
+        "cursor_key_cooldown_ms",
+      ),
+      DEFAULT_CURSOR_KEY_COOLDOWN_MS,
+      { min: 1_000, max: 86_400_000 },
+    ),
     parkTimeoutMs: parseBoundedInt(
       pickConfigured(
         env,
@@ -190,6 +249,47 @@ function ensureConfigFile(configFile: string, production: boolean): void {
   } catch {
     // 部分文件系统/挂载不支持 chmod
   }
+}
+
+function parseCountTokensMode(configured: { value: string | undefined; source: string }): "estimate" | "off" {
+  const value = optionalTrimmed(configured.value)?.toLowerCase();
+  if (value === undefined || value === "off") return "off";
+  if (value === "estimate") return "estimate";
+  throw new Error(`${configured.source} must be "estimate" or "off" (got ${JSON.stringify(configured.value)})`);
+}
+
+/**
+ * `cursor_api_key` plus optional `cursor_api_keys` (comma-separated) form the
+ * upstream key pool. At least one key is required; duplicates are dropped.
+ */
+function cursorKeys(
+  env: NodeJS.ProcessEnv,
+  toml: TomlTable,
+  configFile: string,
+): { cursorApiKey: string; cursorApiKeys: string[] } {
+  const primary = pickString(env.CURSOR_API_KEY, tomlString(toml, "cursor_api_key"));
+  const extra = pickString(env.CURSOR_API_KEYS, tomlString(toml, "cursor_api_keys"));
+  const keys: string[] = [];
+  for (const candidate of [primary, ...(extra ?? "").split(",")]) {
+    const key = optionalTrimmed(candidate);
+    if (key !== undefined && !keys.includes(key)) keys.push(key);
+  }
+  const first = keys[0];
+  if (first === undefined) {
+    throw new Error(
+      `Missing cursor_api_key. Set environment variable CURSOR_API_KEY (or CURSOR_API_KEYS) or add it to ${configFile}`,
+    );
+  }
+  return { cursorApiKey: first, cursorApiKeys: keys };
+}
+
+function parseKeyStrategy(configured: { value: string | undefined; source: string }): "round_robin" | "least_active" {
+  const value = optionalTrimmed(configured.value)?.toLowerCase().replace("-", "_");
+  if (value === undefined || value === "round_robin") return "round_robin";
+  if (value === "least_active") return "least_active";
+  throw new Error(
+    `${configured.source} must be "round_robin" or "least_active" (got ${JSON.stringify(configured.value)})`,
+  );
 }
 
 function requireSecret(
@@ -285,6 +385,14 @@ function parseBoundedInt(
     );
   }
   return parsed;
+}
+
+
+function parseOptionalInterval(
+  configured: { value: string | undefined; source: string }, fallback: number, bounds: { min: number; max: number },
+): number {
+  if (optionalTrimmed(configured.value) === "0") return 0;
+  return parseBoundedInt(configured, fallback, bounds);
 }
 
 function parseBoolean(
@@ -408,6 +516,21 @@ function tomlString(table: TomlTable, key: string): string | undefined {
     }
   }
   return undefined;
+}
+
+function parseCorsOrigins(value: string): string[] {
+  const origins = [...new Set(value.split(",").map((origin) => origin.trim()).filter(Boolean))];
+  for (const origin of origins) {
+    if (origin === "*" && origins.length === 1) continue;
+    try {
+      const url = new URL(origin);
+      if ((url.protocol === "https:" || url.protocol === "http:") && url.origin === origin && !origin.includes("*")) continue;
+    } catch {
+      // Invalid origins are configuration errors, including paths and credentials.
+    }
+    throw new Error("CORS_ALLOW_ORIGINS / cors_allow_origins must contain exact HTTP(S) origins, '*' alone, or an empty string");
+  }
+  return origins;
 }
 
 function scalarToString(value: string | number | boolean | TomlTable | undefined): string | undefined {

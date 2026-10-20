@@ -6,8 +6,10 @@ import { handleAdminRequest } from "./admin.js";
 import { requireClientKey } from "./auth.js";
 import { configureAuthThrottle } from "./auth-throttle.js";
 import { loadConfig } from "./config.js";
+import { resolveModelAlias } from "./model-alias.js";
+import { CursorKeyPool } from "./keypool.js";
 import {
-  getConversationAgentId,
+  getConversationMapping,
   insertRequestLog,
   insertSystemLog,
   openDb,
@@ -17,13 +19,22 @@ import {
 import { GatewayError, cancelledError, httpStatusOf, modelNotFound } from "./errors.js";
 import {
   beginSse,
+  configureSse,
   corsHeaders,
   readJsonBody,
   sendJson,
+  sendAnthropicError,
   sendOpenAiError,
   writeSse,
   writeSseEvent,
 } from "./http.js";
+import {
+  AnthropicStreamWriter,
+  encodeAnthropicMessage,
+  estimateAnthropicInputTokens,
+  newAnthropicMessageId,
+  parseAnthropicMessagesRequest,
+} from "./anthropic.js";
 import { logError, logInfo, setSystemLogWriter, truncateUtf8 } from "./log.js";
 import {
   encodeNonStreamCompletion,
@@ -35,8 +46,14 @@ import {
   parseResponsesRequest,
   ResponsesStreamWriter,
 } from "./responses.js";
-import { getCursorModel, listCursorModels, validateChatRequestModel, warmCursorAccount } from "./cursor.js";
-import { aliasLiveConversation, runChatTurn, validateChatTurnRequest } from "./session.js";
+import { getCursorModel, listCursorModels, runFailureError, warmCursorAccount } from "./cursor.js";
+import {
+  aliasLiveConversation,
+  configureSessionLimits,
+  runChatTurn,
+  startSessionSweeper,
+  validateChatTurnRequest,
+} from "./session.js";
 import type { AppConfig, CursorChatResult, OpenAiToolCall, ParsedChatRequest, Usage } from "./contracts.js";
 
 let config: AppConfig;
@@ -48,6 +65,7 @@ try {
   process.exit(1);
 }
 
+configureSse({ keepaliveMs: config.sseKeepaliveMs });
 try {
   configureAuthThrottle(config.authFailureLimit, { trustedProxies: config.trustedProxies });
 } catch (error) {
@@ -55,11 +73,25 @@ try {
   process.exit(1);
 }
 
+const keyPool = new CursorKeyPool(config.cursorApiKeys, {
+  cooldownMs: config.cursorKeyCooldownMs,
+  strategy: config.cursorKeyStrategy,
+});
+if (keyPool.size > 1) {
+  logInfo("cursor key pool enabled", {
+    keys: keyPool.size,
+    cooldown_ms: config.cursorKeyCooldownMs,
+    strategy: config.cursorKeyStrategy,
+  });
+}
+
 const db = openDb(config.dataDir, {
   retentionDays: config.logRetentionDays,
   maxRows: config.logMaxRows,
   maxDetailBytes: config.logMaxDetailBytes,
 });
+configureSessionLimits({ maxLiveSessions: config.maxLiveSessions });
+startSessionSweeper({ db, conversationTtlDays: config.conversationTtlDays });
 setSystemLogWriter((entry) => {
   insertSystemLog(db, entry);
 });
@@ -92,11 +124,11 @@ server.listen(config.gatewayPort, config.gatewayHost, () => {
     port: config.gatewayPort,
     version: config.version,
   });
-  warmCursorAccount(config.cursorApiKey);
+  warmCursorAccount(keyPool.primary);
 });
 
 async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
-  const cors = corsHeaders(req);
+  const cors = corsHeaders(req, config.corsAllowOrigins);
   let url: URL;
   try {
     url = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);
@@ -126,6 +158,8 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
           base_url: "/v1",
           chat_completions: "POST /v1/chat/completions",
           responses: "POST /v1/responses",
+          messages: "POST /v1/messages (Anthropic)",
+          count_tokens: "POST /v1/messages/count_tokens (estimate)",
           models: "GET /v1/models",
           model: "GET /v1/models/{id}",
         },
@@ -167,13 +201,13 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
       return;
     }
 
-    if (await handleAdminRequest(req, res, url, { config, db })) {
+    if (await handleAdminRequest(req, res, url, { config, db, keyPool })) {
       return;
     }
 
     if (req.method === "GET" && url.pathname === "/v1/models") {
       const key = requireClientKey(req, db, config.apiKeyPepper);
-      const models = await listCursorModels(config.cursorApiKey);
+      const models = await keyPool.run((apiKey) => listCursorModels(apiKey));
       logInfo("models listed", { api_key_id: key.id, count: models.length });
       sendJson(res, 200, { object: "list", data: models }, cors);
       return;
@@ -185,7 +219,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
       if (id === "") {
         throw modelNotFound(id);
       }
-      const model = await getCursorModel(config.cursorApiKey, id);
+      const model = await keyPool.run((apiKey) => getCursorModel(apiKey, id));
       if (!model) {
         throw modelNotFound(id);
       }
@@ -198,14 +232,28 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
       return;
     }
 
+    if (req.method === "POST" && url.pathname === "/v1/messages/count_tokens") {
+      await handleCountTokens(req, res);
+      return;
+    }
+
+    if (req.method === "POST" && url.pathname === "/v1/messages") {
+      await handleMessages(req, res);
+      return;
+    }
+
     if (req.method === "POST" && url.pathname === "/v1/responses") {
       await handleResponses(req, res);
       return;
     }
 
-    sendJson(res, 404, { error: "Not found", code: "not_found" });
+    sendJson(res, 404, { error: "Not found", code: "not_found" }, cors);
   } catch (error) {
     logError("request failed", { path: url.pathname, code: error instanceof GatewayError ? error.code : "server_error" });
+    if (url.pathname === "/v1/messages" || url.pathname.startsWith("/v1/messages/")) {
+      sendAnthropicError(res, error, undefined, cors);
+      return;
+    }
     if (url.pathname.startsWith("/v1/")) {
       sendOpenAiError(res, error, undefined, cors);
       return;
@@ -238,15 +286,15 @@ async function handleChat(req: IncomingMessage, res: ServerResponse): Promise<vo
     const body = await readJsonBody(req, config.maxBodyBytes);
     model = peekModel(body);
     requestDetail = snapshotIncomingBody(body);
-    const parsed = parseChatCompletionsRequest(body);
+    const parsed = parseChatCompletionsRequest(body, { ignoreSamplingParams: config.ignoreSamplingParams });
+    parsed.model = resolveModelAlias(config.modelAliases, parsed.model);
     model = parsed.model;
     stream = parsed.stream ? 1 : 0;
     validateChatTurnRequest(parsed);
     if (config.logDetailed) {
       requestDetail = truncateUtf8(buildRequestDetail(parsed), config.logDetailedMaxBytes);
     }
-    await validateChatRequestModel(config.cursorApiKey, parsed);
-    const headers = corsHeaders(req);
+    const headers = corsHeaders(req, config.corsAllowOrigins);
 
     const abort = new AbortController();
     let holdForTools = false;
@@ -319,7 +367,8 @@ async function handleChat(req: IncomingMessage, res: ServerResponse): Promise<vo
 
       const upstreamStarted = Date.now();
       const result = await runChatTurn({
-        apiKey: config.cursorApiKey,
+        apiKey: keyPool.primary,
+        keyPool,
         apiKeyId: key.id,
         workspaceDir: config.cursorWorkspace,
         request: parsed,
@@ -368,9 +417,7 @@ async function handleChat(req: IncomingMessage, res: ServerResponse): Promise<vo
         throw cancelledError();
       }
       if (result.status === "error" || result.finish_reason === "error") {
-        httpStatus = 502;
-        errorCode = "upstream_error";
-        throw new GatewayError(502, "upstream_error", "Cursor request failed", "upstream_error");
+        throw runFailureError(result.error);
       }
 
       const toolCalls = result.tool_calls ?? collectedTools;
@@ -429,7 +476,7 @@ async function handleChat(req: IncomingMessage, res: ServerResponse): Promise<vo
     errorCode = error instanceof GatewayError ? error.code : "server_error";
     errorMessage = error instanceof Error ? error.message : String(error);
     if (!res.headersSent) {
-      sendOpenAiError(res, error, requestId, corsHeaders(req));
+      sendOpenAiError(res, error, requestId, corsHeaders(req, config.corsAllowOrigins));
     } else {
       const mapped = error instanceof GatewayError ? error : null;
       await writeSse(res, {
@@ -487,6 +534,211 @@ async function handleChat(req: IncomingMessage, res: ServerResponse): Promise<vo
   }
 }
 
+async function handleCountTokens(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  requireClientKey(req, db, config.apiKeyPepper);
+  if (config.anthropicCountTokens === "off") {
+    throw new GatewayError(404, "not_found", "count_tokens is disabled on this gateway", "invalid_request_error");
+  }
+  const body = await readJsonBody(req, config.maxBodyBytes);
+  // Validate the same shape /v1/messages accepts (count_tokens has no max_tokens).
+  const parsed = parseAnthropicMessagesRequest(body);
+  resolveModelAlias(config.modelAliases, parsed.model);
+  sendJson(
+    res,
+    200,
+    { input_tokens: estimateAnthropicInputTokens(body as Record<string, unknown>) },
+    { "x-token-count-estimated": "true", ...corsHeaders(req, config.corsAllowOrigins) },
+  );
+}
+
+async function handleMessages(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  const started = Date.now();
+  const requestId = newAnthropicMessageId();
+  const key = requireClientKey(req, db, config.apiKeyPepper);
+
+  let model = "";
+  let stream = 0;
+  let httpStatus = 200;
+  let errorCode: string | null = null;
+  let errorMessage: string | null = null;
+  let usage: Usage | null = null;
+  let upstreamMs: number | null = null;
+  let requestDetail: string | null = null;
+  let responseDetail: string | null = null;
+  let chatResult: CursorChatResult | null = null;
+  let writer: AnthropicStreamWriter | undefined;
+
+  try {
+    const body = await readJsonBody(req, config.maxBodyBytes);
+    model = peekModel(body);
+    requestDetail = snapshotIncomingBody(body);
+    const parsed = parseAnthropicMessagesRequest(body);
+    parsed.model = resolveModelAlias(config.modelAliases, parsed.model);
+    model = parsed.model;
+    stream = parsed.stream ? 1 : 0;
+    validateChatTurnRequest(parsed);
+    if (config.logDetailed) {
+      requestDetail = truncateUtf8(buildRequestDetail(parsed), config.logDetailedMaxBytes);
+    }
+    const headers = corsHeaders(req, config.corsAllowOrigins);
+
+    const abort = new AbortController();
+    let holdForTools = false;
+    const onClose = (): void => {
+      if (holdForTools) return;
+      if (!res.writableEnded) abort.abort();
+    };
+    req.on("close", onClose);
+    res.on("close", onClose);
+
+    try {
+      const collectedTools: OpenAiToolCall[] = [];
+      if (parsed.stream) {
+        writer = new AnthropicStreamWriter(
+          async (event, data) => {
+            await writeSseEvent(res, event, data);
+          },
+          { id: requestId, model: parsed.model },
+        );
+      }
+      const sink = {
+        onText: async (text: string): Promise<void> => {
+          await writer?.onText(text);
+        },
+        onThinking: async (text: string): Promise<void> => {
+          await writer?.onThinking(text);
+        },
+        onToolCalls: async (calls: OpenAiToolCall[]): Promise<void> => {
+          collectedTools.push(...calls);
+          await writer?.onToolCalls(calls);
+        },
+      };
+
+      const upstreamStarted = Date.now();
+      const result = await runChatTurn({
+        apiKey: keyPool.primary,
+        keyPool,
+        apiKeyId: key.id,
+        workspaceDir: config.cursorWorkspace,
+        request: parsed,
+        abortSignal: abort.signal,
+        onClaimed: parsed.stream
+          ? async (): Promise<void> => {
+              beginSse(res, requestId, headers);
+              await writer?.start();
+            }
+          : undefined,
+        sink,
+        parkTimeoutMs: config.parkTimeoutMs,
+        db,
+      });
+      upstreamMs = Date.now() - upstreamStarted;
+      chatResult = result;
+      if (result.usageKnown) usage = result.usage;
+
+      if (result.finish_reason === "tool_calls") {
+        holdForTools = true;
+      }
+
+      if (result.status === "cancelled" || result.finish_reason === "cancelled") {
+        httpStatus = 499;
+        errorCode = "cancelled";
+        throw cancelledError();
+      }
+      if (result.status === "error" || result.finish_reason === "error") {
+        httpStatus = 502;
+        errorCode = "upstream_error";
+        throw runFailureError(result.error);
+      }
+
+      const toolCalls = result.tool_calls ?? collectedTools;
+      const finishReason = result.finish_reason === "tool_calls" ? "tool_calls" : "stop";
+
+      if (parsed.stream) {
+        await writer?.complete({
+          content: result.text,
+          tool_calls: toolCalls.length > 0 ? toolCalls : undefined,
+          finish_reason: finishReason,
+          usage: result.usageKnown ? result.usage : null,
+        });
+        res.end();
+      } else {
+        sendJson(
+          res,
+          200,
+          encodeAnthropicMessage({
+            id: requestId,
+            model: parsed.model,
+            content: result.text,
+            usage: result.usageKnown ? result.usage : null,
+            cost: result.cost,
+            params: result.params,
+            tool_calls: toolCalls.length > 0 ? toolCalls : undefined,
+            finish_reason: finishReason,
+            ...(result.reasoning ? { reasoning_content: result.reasoning } : {}),
+          }),
+          { "x-request-id": requestId, "request-id": requestId, ...headers },
+        );
+      }
+    } finally {
+      req.off("close", onClose);
+      res.off("close", onClose);
+    }
+  } catch (error) {
+    httpStatus = httpStatusOf(error);
+    errorCode = error instanceof GatewayError ? error.code : "server_error";
+    errorMessage = error instanceof Error ? error.message : String(error);
+    if (!res.headersSent) {
+      sendAnthropicError(res, error, requestId, corsHeaders(req, config.corsAllowOrigins));
+    } else {
+      await writer?.fail(error);
+      res.end();
+    }
+  } finally {
+    const durationMs = Date.now() - started;
+    const gatewayMs = upstreamMs === null ? null : Math.max(0, durationMs - upstreamMs);
+    responseDetail = snapshotResponseDetail(chatResult, errorCode, errorMessage);
+    insertRequestLog(db, {
+      id: requestId,
+      api_key_id: key.id,
+      path: "/v1/messages",
+      model,
+      stream,
+      http_status: httpStatus,
+      duration_ms: durationMs,
+      input_tokens: usage?.prompt_tokens ?? null,
+      output_tokens: usage?.completion_tokens ?? null,
+      total_tokens: usage?.total_tokens ?? null,
+      cache_read_tokens: usage?.cache_read_tokens ?? null,
+      cache_write_tokens: usage?.cache_write_tokens ?? null,
+      reasoning_tokens: usage?.reasoning_tokens ?? null,
+      error_code: errorCode,
+      created_at: new Date().toISOString(),
+      upstream_ms: upstreamMs,
+      gateway_ms: gatewayMs,
+      request_detail: requestDetail,
+      response_detail: responseDetail,
+    });
+    logInfo("messages completed", {
+      request_id: requestId,
+      api_key_id: key.id,
+      model,
+      stream: stream === 1,
+      http_status: httpStatus,
+      duration_ms: durationMs,
+      upstream_ms: upstreamMs,
+      gateway_ms: gatewayMs,
+      input_tokens: usage?.prompt_tokens ?? null,
+      output_tokens: usage?.completion_tokens ?? null,
+      total_tokens: usage?.total_tokens ?? null,
+      cache_read_tokens: usage?.cache_read_tokens ?? null,
+      cache_write_tokens: usage?.cache_write_tokens ?? null,
+      error_code: errorCode,
+      ...(errorMessage ? { error_message: errorMessage } : {}),
+    });
+  }
+}
+
 async function handleResponses(req: IncomingMessage, res: ServerResponse): Promise<void> {
   const started = Date.now();
   const requestId = `resp_${randomUUID().replaceAll("-", "")}`;
@@ -510,16 +762,19 @@ async function handleResponses(req: IncomingMessage, res: ServerResponse): Promi
     model = peekModel(body);
     requestDetail = snapshotIncomingBody(body);
     const parsed = parseResponsesRequest(body);
+    parsed.model = resolveModelAlias(config.modelAliases, parsed.model);
     model = parsed.model;
     stream = parsed.stream ? 1 : 0;
     const resumeId = parsed.conversation_id;
-    if (!parsed.conversation_id) parsed.conversation_id = requestId;
+    if (!parsed.conversation_id) {
+      parsed.conversation_id = requestId;
+      parsed.conversation_id_generated = true;
+    }
     validateChatTurnRequest(parsed);
     if (config.logDetailed) {
       requestDetail = truncateUtf8(buildRequestDetail(parsed), config.logDetailedMaxBytes);
     }
-    await validateChatRequestModel(config.cursorApiKey, parsed);
-    const headers = corsHeaders(req);
+    const headers = corsHeaders(req, config.corsAllowOrigins);
 
     const abort = new AbortController();
     let holdForTools = false;
@@ -565,7 +820,8 @@ async function handleResponses(req: IncomingMessage, res: ServerResponse): Promi
 
       const upstreamStarted = Date.now();
       const result = await runChatTurn({
-        apiKey: config.cursorApiKey,
+        apiKey: keyPool.primary,
+        keyPool,
         apiKeyId: key.id,
         workspaceDir: config.cursorWorkspace,
         request: parsed,
@@ -608,9 +864,7 @@ async function handleResponses(req: IncomingMessage, res: ServerResponse): Promi
         throw cancelledError();
       }
       if (result.status === "error" || result.finish_reason === "error") {
-        httpStatus = 502;
-        errorCode = "upstream_error";
-        throw new GatewayError(502, "upstream_error", "Cursor request failed", "upstream_error");
+        throw runFailureError(result.error);
       }
 
       const toolCalls = result.tool_calls ?? collectedTools;
@@ -656,7 +910,7 @@ async function handleResponses(req: IncomingMessage, res: ServerResponse): Promi
     errorCode = error instanceof GatewayError ? error.code : "server_error";
     errorMessage = error instanceof Error ? error.message : String(error);
     if (!res.headersSent) {
-      sendOpenAiError(res, error, requestId, corsHeaders(req));
+      sendOpenAiError(res, error, requestId, corsHeaders(req, config.corsAllowOrigins));
     } else {
       const mapped = error instanceof GatewayError ? error : null;
       await writer?.fail({
@@ -714,8 +968,10 @@ async function handleResponses(req: IncomingMessage, res: ServerResponse): Promi
 function rememberResponseChain(apiKeyId: string, resumeId: string | undefined, responseId: string): void {
   if (!resumeId || resumeId === responseId) return;
   aliasLiveConversation(apiKeyId, resumeId, responseId);
-  const agentId = getConversationAgentId(db, apiKeyId, resumeId);
-  if (agentId) upsertConversation(db, apiKeyId, responseId, agentId);
+  const mapping = getConversationMapping(db, apiKeyId, resumeId);
+  if (mapping) {
+    upsertConversation(db, apiKeyId, responseId, mapping.agentId, mapping.cursorKeyId);
+  }
 }
 
 function buildRequestDetail(parsed: ParsedChatRequest): string {

@@ -24,7 +24,7 @@ export const DEFAULT_LOG_POLICY: LogPolicy = {
 /** Per-row cap for the client-controlled `model` column (UTF-8 bytes). */
 export const MAX_LOG_MODEL_BYTES = 256;
 
-export const SCHEMA_VERSION = 7;
+export const SCHEMA_VERSION = 8;
 const MAX_CONVERSATIONS_PER_KEY = 1_000;
 
 const logPolicies = new WeakMap<DatabaseSync, LogPolicy>();
@@ -76,6 +76,7 @@ CREATE TABLE IF NOT EXISTS conversations (
   api_key_id TEXT NOT NULL,
   conversation_id TEXT NOT NULL,
   agent_id TEXT NOT NULL,
+  cursor_key_id TEXT,
   updated_at TEXT NOT NULL,
   PRIMARY KEY (api_key_id, conversation_id)
 );
@@ -546,12 +547,39 @@ function migrateConversations(db: DatabaseSync): void {
       api_key_id TEXT NOT NULL,
       conversation_id TEXT NOT NULL,
       agent_id TEXT NOT NULL,
+      cursor_key_id TEXT,
       updated_at TEXT NOT NULL,
       PRIMARY KEY (api_key_id, conversation_id)
     );
     CREATE INDEX IF NOT EXISTS idx_conversations_api_key_updated_at
       ON conversations(api_key_id, updated_at DESC);
   `);
+  const columns = new Set(
+    db.prepare("PRAGMA table_info(conversations)").all().map((row) => asString(row.name)),
+  );
+  if (!columns.has("cursor_key_id")) {
+    db.exec("ALTER TABLE conversations ADD COLUMN cursor_key_id TEXT");
+  }
+}
+
+export interface ConversationMapping {
+  agentId: string;
+  cursorKeyId?: string;
+}
+
+export function getConversationMapping(
+  db: DatabaseSync,
+  apiKeyId: string,
+  conversationId: string,
+): ConversationMapping | undefined {
+  const row = db
+    .prepare(
+      "SELECT agent_id, cursor_key_id FROM conversations WHERE api_key_id = ? AND conversation_id = ?",
+    )
+    .get(apiKeyId, conversationId);
+  if (!row) return undefined;
+  const cursorKeyId = row.cursor_key_id === null ? undefined : asString(row.cursor_key_id);
+  return { agentId: asString(row.agent_id), ...(cursorKeyId ? { cursorKeyId } : {}) };
 }
 
 export function getConversationAgentId(
@@ -559,12 +587,7 @@ export function getConversationAgentId(
   apiKeyId: string,
   conversationId: string,
 ): string | undefined {
-  const row = db
-    .prepare(
-      "SELECT agent_id FROM conversations WHERE api_key_id = ? AND conversation_id = ?",
-    )
-    .get(apiKeyId, conversationId);
-  return row ? asString(row.agent_id) : undefined;
+  return getConversationMapping(db, apiKeyId, conversationId)?.agentId;
 }
 
 export function upsertConversation(
@@ -572,14 +595,16 @@ export function upsertConversation(
   apiKeyId: string,
   conversationId: string,
   agentId: string,
+  cursorKeyId?: string,
 ): void {
   db.prepare(
-    `INSERT INTO conversations (api_key_id, conversation_id, agent_id, updated_at)
-     VALUES (?, ?, ?, ?)
+    `INSERT INTO conversations (api_key_id, conversation_id, agent_id, cursor_key_id, updated_at)
+     VALUES (?, ?, ?, ?, ?)
      ON CONFLICT(api_key_id, conversation_id) DO UPDATE SET
        agent_id = excluded.agent_id,
+       cursor_key_id = excluded.cursor_key_id,
        updated_at = excluded.updated_at`,
-  ).run(apiKeyId, conversationId, agentId, new Date().toISOString());
+  ).run(apiKeyId, conversationId, agentId, cursorKeyId ?? null, new Date().toISOString());
   db.prepare(
     `DELETE FROM conversations
      WHERE rowid IN (
@@ -590,6 +615,17 @@ export function upsertConversation(
        LIMIT -1 OFFSET ?
      )`,
   ).run(apiKeyId, MAX_CONVERSATIONS_PER_KEY);
+}
+
+/** Drops conversation → agent mappings not used since `olderThanIso`. Returns rows removed. */
+export function pruneConversations(db: DatabaseSync, olderThanIso: string): number {
+  const result = db.prepare("DELETE FROM conversations WHERE updated_at < ?").run(olderThanIso);
+  return Number(result.changes);
+}
+
+export function countConversations(db: DatabaseSync): number {
+  const row = db.prepare("SELECT COUNT(*) AS n FROM conversations").get() as { n: number } | undefined;
+  return Number(row?.n ?? 0);
 }
 
 export function insertSystemLog(

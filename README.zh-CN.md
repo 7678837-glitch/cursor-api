@@ -109,9 +109,19 @@ detailed = false
 | `[logs].detailed` | 记录请求/响应 JSON，管理台点击日志可查看（默认 **false**）。正文以**明文**存在 `./data`，请保护数据目录 |
 | `[logs].detailed_max_bytes` | 单条请求/响应 JSON 上限（4KiB–1MiB，默认 64KiB） |
 | `[logs].max_detail_bytes` | `model` + 详细正文合计 UTF-8 字节上限（默认 256MiB），超限先删最旧行 |
+| `cursor_api_keys` | 可选的额外 Cursor key，逗号分隔（环境变量 `CURSOR_API_KEYS`）。与 `cursor_api_key` 一起组成 key 池：新建 agent 时在健康 key 间轮询；某个 key 返回上游认证错误或限流时进入冷却，本次请求自动切到下一个 key。已经向客户端输出内容后不再切换；待回传结果的工具轮次继续在原 agent（原 key）上执行 |
+| `cursor_key_cooldown_ms` | 限流后的冷却时间（默认 **60000**，1 秒–24 小时），连续失败翻倍，最多 8 倍。认证失败冷却 15 分钟 |
+| `cursor_key_strategy` | `round_robin`（默认）轮流使用各 key；`least_active` 把每个请求发给当前进行中请求最少的健康 key，持平时轮流。`GET /admin/api/cursor-keys` 返回每个 key 的 `active_requests`、`successes`、`failures`、`last_used_at` |
 | `park_timeout_ms` | 工具轮次在内存里保留多久（默认 **300000**）。网关重启后，下一次工具结果按 HTTP transcript 续场 |
+| `max_live_sessions` | 内存中运行和等待工具结果的 Cursor 会话上限（默认 **256**）；正在创建的会话也计入上限 |
+| `conversation_ttl_days` | 未使用的持久化 `conversation_id` 映射保留天数（默认 **30**） |
+| `ignore_sampling_params` | 丢弃 Chat Completions 不支持的采样参数而不返回 400（默认 **false**） |
+| `sse_keepalive_ms` | 空闲流式响应发送 `: keepalive` 注释的间隔（默认 **15000**；`0` 关闭） |
+| `cors_allow_origins` | 浏览器跨域来源，默认 `"*"`；用逗号分隔精确来源（如 `"https://app.example.com,http://localhost:5173"`），空字符串关闭 CORS。环境变量 `CORS_ALLOW_ORIGINS` 可覆盖，包括空值 |
 | `auth_failure_limit` | 每个客户端地址在任意 60 秒滑动窗口内允许的认证失败次数（默认 **20**，最大 1000；`0` 关闭）。管理密钥和客户端 Key 分开计数。**管理端：**达到上限后，该地址的所有管理请求（包括正确密钥）都返回 `429` 和 `Retry-After`，直到窗口内的失败数回落。**客户端 Key：**正确的 Key 永远不会被限流，只有继续使用错误 Key 的请求会返回 `429` + `Retry-After`（代替 `401`）。不带任何 Key 的请求不计数。IPv6 按 /64 合并计数 |
 | `trusted_proxies` | 反向代理的 IP 或 CIDR，逗号分隔，例如 `"127.0.0.1, 172.18.0.0/16"`（环境变量 `TRUSTED_PROXIES`）。默认为空：TCP 对端地址即客户端地址，忽略 `X-Forwarded-For`。对端在列表中时，取 `X-Forwarded-For` 从右往左第一个不在列表中的地址。在反代后面却不配置此项时，所有客户端在 `auth_failure_limit` 中共用代理地址。只填写会覆盖或追加 `X-Forwarded-For` 的代理（nginx `proxy_add_x_forwarded_for`、Caddy 默认行为） |
+
+会话在重启后仍绑定创建它的 Cursor Key，SQLite 仅保存指纹。移除所属 Key 后，增量续接会明确报错；发送完整历史可重放。旧映射没有归属信息时，多 Key 模式需要完整历史。
 
 ```bash
 chmod 600 data/config/gateway.toml
@@ -166,17 +176,58 @@ curl -s http://127.0.0.1:8787/v1/chat/completions \
 |------|------|------------|
 | `POST` | `/v1/chat/completions` | OpenAI SDK、OpenCode `"npm": "@ai-sdk/openai-compatible"` |
 | `POST` | `/v1/responses` | Codex、OpenCode `"npm": "@ai-sdk/openai"` |
+| `POST` | `/v1/messages` | Anthropic SDK、兼容 Claude 的客户端 |
 | `GET` | `/v1/models`、`/v1/models/{id}` | 模型列表 |
 
 支持流式（`stream: true`）、视觉（`image_url`，以及 OpenCode 的 `image` / 图片 `file` 部件）、思考块（`delta.reasoning_content`）、Cursor 参数（`params`、`variant`、`reasoning_effort` 等）。`variant` 匹配唯一的目录显示名；当 Cursor 把所有 variant 都起成同一个显示名时，改为匹配 effort/reasoning/fast 的值（OpenCode `--variant high` 在 `@ai-sdk/openai-compatible` 上不会发出该字段；请在请求体里发 `variant` 或 `reasoning_effort`）。支持 OpenAI 工具调用（`tools` / `tool_calls` / `role: tool`），供 OpenCode 等客户端在本地执行工具。Cursor 的 shell/文件工具保持关闭；仅在有客户端工具时打开 MCP，用来把这些工具暴露给模型。不支持音频。`temperature` / `top_p` / `seed` 会 400；`max_tokens` 仍接收。`conversation_id`（或 `metadata.conversation_id`）按客户端 Key 续同一个 Cursor Agent；ID 最多 512 个 UTF-8 字节，每个客户端 Key 保留最近 1000 条映射。工具停车超时为 `park_timeout_ms`（默认 300000）；网关重启后，工具结果按 HTTP transcript 续场。
 
 Cursor SDK 每轮接收的是单个 prompt，并不原生接收 OpenAI 角色消息。本项目会把 `system` / `developer` / `user` 角色序列化进 transcript 文本；因此应用传入的 `system` 或 `developer` 消息只能作为上下文，不能充当抵御恶意用户内容的硬安全边界。
 
+### Anthropic Messages（`POST /v1/messages`）
+
+Anthropic SDK / 兼容 Claude 的工具把 base URL 指向网关根地址（SDK 会自己拼 `/v1/messages`）：
+
+```text
+ANTHROPIC_BASE_URL=http://127.0.0.1:8787
+ANTHROPIC_API_KEY=<你的 cgk_ 客户端 key>      # 以 x-api-key 发送
+```
+
+- 支持 `system`（字符串或 text 块）、`text` / `image`（base64 或 URL）块、`stream: true`（`message_start` → `content_block_*` → `message_delta` → `message_stop`），思考内容以 `thinking` 块输出。
+- 客户端工具：`tools[].input_schema` → `tool_use` 块 + `stop_reason: "tool_use"`；下一轮 user 消息里回传 `tool_result`（`is_error: true` 会作为错误结果交给模型）。与 `tool_result` 同时出现的额外文本会附加到最后一个结果上。没有 `input_schema` 的服务端工具（`web_search_…`、`bash_…`）会被忽略。
+- `tool_choice`：`auto`、`tool`、`none`；`any` 退化为 `auto`（Cursor 无法强制调用工具）。
+- 忽略：`temperature`、`top_p`、`top_k`、`thinking`、`output_config`、`context_management`、`service_tier`。未知顶层字段也会忽略。拒绝：非空 `stop_sequences`、`document` 块。
+- Cursor 参数（`params`、`variant`、`reasoning_effort`、`verbosity`、`fast`、`optimize_for`）以及 `conversation_id` / `metadata.conversation_id` 与 Chat Completions 一致。
+- 错误为 Anthropic 格式：`{"type":"error","error":{"type":"invalid_request_error","message":"…"}}`。
+- `usage` 的 `input_tokens` / `output_tokens` / `cache_read_input_tokens` / `cache_creation_input_tokens` 来自 Cursor token 用量；非流式响应附带 `cursor.cost`。
+- `POST /v1/messages/count_tokens` 返回粗略估算（见下方 Claude Code）。
+
+### Claude Code
+
+Claude Code CLI 2.x 可以直接连 `/v1/messages`（已用 `claude -p` 验证，包括 Bash 工具往返、`/context` 和流式）：
+
+```bash
+# gateway.toml（或环境变量 MODEL_ALIASES）：把 Claude 模型名映射到 Cursor 模型
+#   model_aliases = "claude-haiku-*=composer-2.5, claude-*=composer-2.5"
+export ANTHROPIC_BASE_URL=http://127.0.0.1:8787
+export ANTHROPIC_API_KEY=cgk_你的key          # 以 x-api-key 发送
+claude -p "Reply with PONG"
+```
+
+网关对 Claude Code 请求的处理：
+
+- 带 `anthropic-beta` 的 `POST /v1/messages?beta=true`：所有 beta 标志和未知顶层字段（`context_management`、`safeguards`、`output_config` 等）都会接受并忽略。
+- Claude 模型名（`claude-opus-*`、`claude-sonnet-*`，以及后台任务用的 `claude-haiku-*`）经过 `model_aliases` 映射：先匹配先生效，`*` 是通配符，对所有接口生效；没有匹配时原样查 Cursor 模型目录，查不到会返回 `not_found_error`。
+- `messages` 里的 `system` 消息会作为 `[system]` 上下文并入前一条 user / tool 消息，这样工具轮次能继续命中停车的 Cursor 会话，不必重放整个 transcript。
+- `thinking` / `output_config.effort` 映射为尽力而为的推理档位（effort `low`–`max`；`budget_tokens` <4k → low，<16k → medium，否则 high；`disabled` → 最低档）。没有 effort 参数的模型忽略。
+- 历史里的服务端工具块（`server_tool_use`、`web_search_tool_result` 等）会跳过，`cache_control` 会忽略。
+- `POST /v1/messages/count_tokens` **默认返回 404**，因为 SDK 没有精确 tokenizer。设置 `anthropic_count_tokens = "estimate"`（环境变量 `ANTHROPIC_COUNT_TOKENS`）可启用粗略本地估算（响应头 `x-token-count-estimated: true`；约 4 个 ASCII 字符或 1 个非 ASCII 字符算 1 个 token）。估算有误差，可能影响客户端上下文压缩判断，不能视为真实用量。
+- `HEAD /api/hello`（Claude Code 的连通性探测）返回 404，Claude Code 能容忍。
+
 ### Codex（`POST /v1/responses`）
 
 把 Codex 指到本网关的 `/v1`。压缩（`/compact`）请求可被接受：Responses 接受 `parallel_tool_calls: false` 和 `tools: []`（该开关会被忽略，Cursor 不区分）。Chat Completions 对 `parallel_tool_calls: false` 仍 400。
 
-Responses 还会收下并忽略采样参数（`temperature`、`top_p` 等）以及未知顶层字段（`client_metadata`、`include` 等）。Codex 的 `custom` 工具（`apply_patch`）往返发 `custom_tool_call` 和自由格式 `input`。嵌套 `namespace` 工具摊平成 function。没有 name 的 hosted 工具（`web_search` 等）直接丢掉。上一轮的 assistant 正文和 `function_call` 会并成一条消息，避免工具结果 400。`previous_response_id` 续同一个 Cursor Agent。
+Responses 还会收下并忽略采样参数（`temperature`、`top_p` 等）以及未知顶层字段（`client_metadata`、`include` 等）。Codex 的 `custom` 工具（`apply_patch`）往返发 `custom_tool_call` 和自由格式 `input`。嵌套 `namespace` 工具摊平成 function。没有 name 的 hosted 工具（`web_search` 等）直接丢掉。上一轮的 assistant 正文和 `function_call` 会并成一条消息，避免工具结果 400。`previous_response_id` 续同一个 Cursor Agent。`reasoning.effort` 按尽力而为处理：模型有 effort 参数时映射过去（精确匹配，否则取最接近的档位，如 `xhigh` → `high`、`minimal` → `low`），模型没有该参数时忽略，所以 Codex 的默认请求不会 400。顶层 `reasoning_effort` 仍与 Chat Completions 一样严格校验。
 
 ### OpenCode
 
@@ -215,7 +266,7 @@ print(client.chat.completions.create(
 
 浏览器访问 `/admin/`：总览（含近 7 天调用曲线）、客户端 Key（创建 / 停用 / 恢复 / 删除）、请求日志、系统日志。
 
-管理 API：`/admin/api/*`，用同一把 `admin_access_key`（`Authorization: Bearer` 或 `X-Management-Key`）。`DELETE /admin/api/keys/{id}` 删除客户端 Key，历史请求日志保留。`GET /admin/api/system-logs` 列出写入 SQLite 的网关 stdout/stderr 事件。
+管理 API：`/admin/api/*`，用同一把 `admin_access_key`（`Authorization: Bearer` 或 `X-Management-Key`）。`DELETE /admin/api/keys/{id}` 删除客户端 Key，历史请求日志保留。`GET /admin/api/system-logs` 列出写入 SQLite 的网关 stdout/stderr 事件。`GET /admin/api/cursor-keys` 查看上游 key 池状态（sha256 指纹、`healthy` / `cooling_down`、失败计数；不返回 key 本身）。概览接口包含 `cursor_keys: {total, healthy}`。
 
 ---
 
@@ -279,6 +330,8 @@ GIT_COMMIT=$(git rev-parse HEAD) docker compose build
 ---
 
 ## 健康检查
+
+镜像自带 Docker `HEALTHCHECK`，按环境变量和 TOML 中的实际监听地址、端口探测 `/health`。此检查只验证网关进程存活，不代表 Cursor 密钥有效或模型可用。
 
 | 端点 | 用途 |
 |------|------|

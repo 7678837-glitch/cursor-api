@@ -22,4 +22,6 @@ COPY VERSION ./
 RUN mkdir -p /app/data && chown -R app:app /app
 USER app
 EXPOSE 8787
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+  CMD ["node", "-e", "import('./dist/config.js').then(({loadConfig})=>{const c=loadConfig();return fetch('http://'+(c.gatewayHost==='0.0.0.0'?'127.0.0.1':c.gatewayHost==='::'?'[::1]':c.gatewayHost.includes(':')?'['+c.gatewayHost+']':c.gatewayHost)+':'+c.gatewayPort+'/health')}).then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"]
 CMD ["node", "dist/index.js"]

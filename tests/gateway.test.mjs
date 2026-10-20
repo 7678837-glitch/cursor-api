@@ -941,6 +941,15 @@ test("parked-session routing honors explicit IDs and image identity", async () =
     resolveParkedRoute({ hasConversationParks: false, hasStemParks: true }),
     "stem",
   );
+  // Gateway-assigned IDs (Responses without previous_response_id) still match by history.
+  assert.equal(
+    resolveParkedRoute({ conversationId: "resp_1", conversationIdGenerated: true, hasConversationParks: false, hasStemParks: true }),
+    "stem",
+  );
+  assert.equal(
+    resolveParkedRoute({ conversationId: "resp_1", conversationIdGenerated: true, hasConversationParks: false, hasStemParks: false }),
+    undefined,
+  );
 
   const first = [
     {
@@ -1336,7 +1345,8 @@ test("responses parse maps string input, instructions, and previous_response_id"
   });
   assert.equal(parsed.model, "composer-2.5");
   assert.equal(parsed.conversation_id, "resp_abc");
-  assert.equal(parsed.reasoning_effort, "high");
+  assert.equal(parsed.reasoning_effort, undefined);
+  assert.equal(parsed.reasoning_effort_hint, "high");
   assert.equal(parsed.verbosity, "low");
   assert.equal(parsed.messages[0]?.role, "system");
   assert.equal(parsed.messages[0]?.content, "be brief");

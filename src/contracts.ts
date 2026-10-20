@@ -4,7 +4,18 @@
  */
 
 export interface AppConfig {
+  corsAllowOrigins: string[];
+  /** `POST /v1/messages/count_tokens`: rough local estimate, or 404 when off. */
+  anthropicCountTokens: "estimate" | "off";
+  /** `model_aliases` rules applied to every request's `model` before catalog lookup. */
+  modelAliases: Array<{ pattern: string; target: string; matcher: RegExp }>;
   cursorApiKey: string;
+  /** Upstream key pool (`cursor_api_key` + `cursor_api_keys`), deduplicated, at least one. */
+  cursorApiKeys: string[];
+  /** Cooldown after an upstream rate limit before a key is tried again. */
+  cursorKeyCooldownMs: number;
+  /** Key selection: `round_robin` (default) or `least_active`. */
+  cursorKeyStrategy: "round_robin" | "least_active";
   gatewayHost: string;
   gatewayPort: number;
   adminAccessKey: string;
@@ -20,9 +31,17 @@ export interface AppConfig {
   logDetailedMaxBytes: number;
   logMaxDetailBytes: number;
   parkTimeoutMs: number;
-  /** Failed authentications allowed per client address per minute; 0 disables the limit. */
+  /** Unsupported Chat Completions sampling knobs are dropped instead of rejected. */
+  ignoreSamplingParams: boolean;
+  /** SSE comment heartbeat interval while a stream is open; 0 disables it. */
+  sseKeepaliveMs: number;
+  /** Failed authentication attempts allowed per address each minute; 0 disables throttling. */
   authFailureLimit: number;
-  /** Reverse proxies whose X-Forwarded-For is trusted (IPs or CIDRs); empty = trust none. */
+  /** Upper bound on in-memory Cursor sessions (running or parked for tool results). */
+  maxLiveSessions: number;
+  /** Days a conversation_id → agent mapping survives without use. */
+  conversationTtlDays: number;
+  /** Reverse proxies whose X-Forwarded-For is trusted. */
   trustedProxies: string[];
 }
 
@@ -170,6 +189,12 @@ export interface ParsedChatRequest {
   params?: ModelParam[];
   variant?: string;
   reasoning_effort?: string;
+  /**
+   * Best-effort reasoning level from clients that always send one (Responses
+   * `reasoning.effort`, Anthropic `thinking` / `output_config.effort`). Applied
+   * only when the model has an effort parameter; never causes a 400.
+   */
+  reasoning_effort_hint?: string;
   verbosity?: string;
   fast?: string;
   optimize_for?: string;
@@ -178,6 +203,8 @@ export interface ParsedChatRequest {
   customToolNames?: string[];
   tool_choice?: "auto" | "none" | { name: string };
   conversation_id?: string;
+  /** The gateway assigned the conversation ID, so transcript matching remains valid. */
+  conversation_id_generated?: boolean;
 }
 
 export interface OpenAiModel {
@@ -209,6 +236,7 @@ export interface CursorChatResult {
   params?: ModelParam[];
   status: "finished" | "error" | "cancelled";
   finish_reason: "stop" | "tool_calls" | "cancelled" | "error";
+  error?: { message: string; code?: string };
   tool_calls?: OpenAiToolCall[];
   /** Cursor `thinking-delta` text; OpenCode reads this as `reasoning_content`. */
   reasoning?: string;

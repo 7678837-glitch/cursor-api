@@ -55,16 +55,23 @@ const REJECTED_FIELDS = [
   "logit_bias",
 ] as const;
 
+const SAMPLING_FIELDS = new Set(["temperature", "top_p", "top_k", "presence_penalty", "frequency_penalty", "seed"]);
+
+export interface ChatParseOptions {
+  ignoreSamplingParams?: boolean;
+}
+
 const ALLOWED_ROLES = new Set(["system", "developer", "user", "assistant", "tool"]);
 const REJECTED_ROLES = new Set(["function"]);
 const REJECTED_MEDIA_TYPES = new Set(["audio", "input_audio"]);
 const SKIPPED_CONTENT_TYPES = new Set(["reasoning", "reasoning_content"]);
 const MAX_CONVERSATION_ID_BYTES = 512;
 
-export function parseChatCompletionsRequest(body: unknown): ParsedChatRequest {
-  if (!isPlainObject(body)) {
+export function parseChatCompletionsRequest(input: unknown, options: ChatParseOptions = {}): ParsedChatRequest {
+  if (!isPlainObject(input)) {
     throw invalidRequest("Request body must be a JSON object");
   }
+  const body = options.ignoreSamplingParams ? withoutSamplingParams(input) : input;
 
   for (const field of REJECTED_FIELDS) {
     if (field in body) {
@@ -134,6 +141,15 @@ export function parseChatCompletionsRequest(body: unknown): ParsedChatRequest {
     ...(toolChoice !== undefined ? { tool_choice: toolChoice } : {}),
     ...(conversationId ? { conversation_id: conversationId } : {}),
   };
+}
+
+function withoutSamplingParams(body: Record<string, unknown>): Record<string, unknown> {
+  const copy: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(body)) {
+    if (SAMPLING_FIELDS.has(key) || (key === "parallel_tool_calls" && value === false)) continue;
+    copy[key] = value;
+  }
+  return copy;
 }
 
 /** 只取最后一条 user 上的图，避免把历史轮次的图摊到本次 send。 */

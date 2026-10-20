@@ -8,13 +8,25 @@
 port = 8787
 
 cursor_api_key = ""
+# Optional extra keys, comma-separated; requests rotate across healthy keys
+# and fail over on upstream auth / rate-limit errors.
+# cursor_api_keys = ""
+# cursor_key_cooldown_ms = 60000
+# cursor_key_strategy = "round_robin"
+# anthropic_count_tokens = "off"  # "estimate" enables approximate local token counts
+# model_aliases = "claude-*=composer-2.5"
 admin_access_key = ""
 api_key_pepper = ""
 
 # data_dir = "data"
 # cursor_workspace = "data/workspace"
 # park_timeout_ms = 300000
+# max_live_sessions = 256
+# conversation_ttl_days = 30
+# ignore_sampling_params = false
+# sse_keepalive_ms = 15000
 # auth_failure_limit = 20
+# cors_allow_origins = "*" # exact HTTP(S) origins separated by commas; empty disables CORS
 # trusted_proxies = "127.0.0.1"   # reverse proxies whose X-Forwarded-For is trusted; empty = none
 
 [logs]

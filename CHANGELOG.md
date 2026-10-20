@@ -9,13 +9,51 @@ Version numbers use **`YYYYMMDD.N`** (date + same-day increment). The single sou
 
 ---
 
-## [Unreleased]
+## [20261020.1] — 2026-10-20
+
+### Added
+
+- 集成 Anthropic Messages、Claude Code 工具往返、模型别名和推理档位支持；本地 token 估算需显式开启，默认返回 404。
+- 集成 Cursor 多 Key 轮换、冷却、故障切换、least_active 策略及管理台状态面板。
+
+### Fixed
+
+- 会话及 Responses 续接绑定原上游 Key，持久化仅保存指纹；跨账号模型验证与运行使用同一 Key。
+- 工具续接参与 Key 池负载统计；已向客户端输出内容后停止故障切换。
+- Anthropic 限流错误保留 Retry-After 响应头。
 
 ### Changed (BREAKING)
 
 - **The default listen address is now `127.0.0.1`.** Previously `NODE_ENV=production` without a `host` defaulted to `0.0.0.0`. Affected: anyone reaching the gateway from another machine while running without Docker under `NODE_ENV=production` (PM2, systemd, …) with no `host` in `gateway.toml` and no `GATEWAY_HOST`, and custom container images that do not use this repo's `Dockerfile`. Symptom after upgrade: `curl http://127.0.0.1:8787/health` works locally, other machines get *connection refused*. Check with `ss -ltnp | grep 8787` (`127.0.0.1:8787` means affected). To restore LAN access, add `host = "0.0.0.0"` to `gateway.toml` or set `GATEWAY_HOST=0.0.0.0` (PM2 ecosystem `env` / systemd `Environment=`) and restart. Risk: `0.0.0.0` exposes the gateway, and with it your Cursor account, to every network the host is on; only do it behind a firewall or reverse proxy. Not affected: the official image and compose files (still `0.0.0.0` inside the container), and configs that already contain `host = "0.0.0.0"` (including ones auto-created by older releases). See README → *Upgrading: listen address*.
 - Listen address priority is now `GATEWAY_HOST` → `gateway.toml` `host` → `GATEWAY_DEFAULT_HOST` → `127.0.0.1`. The Docker image sets `GATEWAY_DEFAULT_HOST=0.0.0.0` (not `GATEWAY_HOST`), so a `host` in a mounted `gateway.toml` is honoured inside the container. A warning is logged when `GATEWAY_HOST` overrides a different `host` from `gateway.toml`.
 - The auto-created `gateway.toml` and `gateway.toml.example` no longer pin `host = "0.0.0.0"`; the line is commented out.
+
+---
+
+## [20261016.1] — 2026-10-16
+
+### Changed
+
+- 升级 `@cursor/sdk` 至 1.0.37、TypeScript 至 7.0.2、Node 22 类型至 22.20.5；撤销已不再需要的 `undici` 覆盖。
+- CI 增加 PR 校验、Node 22.13 / 22 / 24 测试和 amd64 容器健康检查；更新官方 Actions，发布构建禁用缓存。
+- 限制运行与停车会话数量，定期清理过期会话映射；新配置见双语 README。
+
+### Fixed
+
+- 无状态 Responses 工具回合可续接停车会话；`reasoning.effort` 按模型支持档位映射。
+- 工具回合生成的 response ID 持久化供后续恢复；数据库写失败时释放已创建或恢复的 Agent 及容量占位。
+- SSE 立即发送响应头并维持心跳；上游失败区分认证、限流、忙碌、不可用和超时，保留诊断信息。
+- 可选忽略 Chat Completions 采样参数，默认保持严格校验。
+
+### Security
+
+- 认证失败达到每地址窗口上限后拒绝凭据校验，响应附带 `Retry-After`；管理页禁止嵌入。
+- 日志保留 token 数量并递归遮盖嵌套对象、数组及消息中的凭据。
+- CORS 支持精确来源白名单及关闭模式，默认通配响应不再回显任意来源。
+
+### Documentation
+
+- [维护评估](docs/maintenance-20261016.md)记录现有 issue / PR 的处理结果、官方 SDK 核验依据与验证边界。
 
 ---
 
