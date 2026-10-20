@@ -56,7 +56,12 @@ try {
 }
 
 configureSse({ keepaliveMs: config.sseKeepaliveMs });
-configureAuthThrottle(config.authFailureLimit);
+try {
+  configureAuthThrottle(config.authFailureLimit, { trustedProxies: config.trustedProxies });
+} catch (error) {
+  logError(error instanceof Error ? error.message : "invalid trusted_proxies");
+  process.exit(1);
+}
 
 const db = openDb(config.dataDir, {
   retentionDays: config.logRetentionDays,
@@ -161,9 +166,12 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
     ) {
       const html = fs.readFileSync(adminPagePath, "utf8");
       res.writeHead(200, {
-        "content-type": "text/html; charset=utf-8", "cache-control": "no-store",
-        "x-frame-options": "DENY", "content-security-policy": "frame-ancestors 'none'",
-        "x-content-type-options": "nosniff", "referrer-policy": "no-referrer",
+        "content-type": "text/html; charset=utf-8",
+        "cache-control": "no-store",
+        "x-frame-options": "DENY",
+        "content-security-policy": "frame-ancestors 'none'",
+        "x-content-type-options": "nosniff",
+        "referrer-policy": "no-referrer",
       });
       res.end(html);
       return;

@@ -1,18 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { AuthFailureThrottle, configureAuthThrottle, guardAuth } from "../dist/auth-throttle.js";
-import { authenticationError } from "../dist/errors.js";
+import { AuthFailureThrottle } from "../dist/auth-throttle.js";
 import { CLIENT_KEY, startFakeGateway } from "./fixtures/gateway-harness.mjs";
-
-test("exhausted authentication limits reject guesses before checking credentials", () => {
-  const req = { socket: { remoteAddress: "192.0.2.1" } };
-  configureAuthThrottle(1);
-  assert.throws(() => guardAuth(req, () => { throw authenticationError(); }), { httpStatus: 401 });
-  let checked = false;
-  assert.throws(() => guardAuth(req, () => { checked = true; }), { httpStatus: 429 });
-  assert.equal(checked, false);
-  configureAuthThrottle(0);
-});
 
 test("throttle blocks an address after the limit until the window passes", () => {
   let now = 0;
@@ -28,7 +17,7 @@ test("throttle blocks an address after the limit until the window passes", () =>
   assert.equal(new AuthFailureThrottle(0, 60_000).enabled, false);
 });
 
-test("gateway answers 429 after repeated bad keys, for client and admin routes alike", { timeout: 20_000 }, async () => {
+test("gateway backs off repeated bad client keys without locking out valid keys or the admin", { timeout: 20_000 }, async () => {
   const gateway = await startFakeGateway({ AUTH_FAILURE_LIMIT: "3" });
   try {
     const models = (key) => fetch(`${gateway.baseUrl}/v1/models`, { headers: { authorization: `Bearer ${key}` } });
@@ -36,12 +25,12 @@ test("gateway answers 429 after repeated bad keys, for client and admin routes a
     for (let i = 0; i < 3; i += 1) assert.equal((await models("cgk_wrong")).status, 401);
     const blocked = await models("cgk_wrong");
     assert.equal(blocked.status, 429);
+    assert.ok(Number(blocked.headers.get("retry-after")) >= 1);
     assert.match((await blocked.json()).error.message, /failed authentication/);
-    assert.ok(Number(blocked.headers.get("retry-after")) > 0);
-    // A blocked address cannot continue checking guesses, even against valid credentials.
-    assert.equal((await models(CLIENT_KEY)).status, 429);
+    // A valid client key is never throttled, and client failures do not count against the admin bucket.
+    assert.equal((await models(CLIENT_KEY)).status, 200);
     const admin = await fetch(`${gateway.baseUrl}/admin/api/overview`, { headers: { authorization: "Bearer it-admin-key" } });
-    assert.equal(admin.status, 429);
+    assert.equal(admin.status, 200);
   } finally {
     await gateway.stop();
   }

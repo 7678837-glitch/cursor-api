@@ -31,6 +31,8 @@ export interface AppConfig {
   maxLiveSessions: number;
   /** Days a conversation_id → agent mapping survives without use. */
   conversationTtlDays: number;
+  /** Reverse proxies whose X-Forwarded-For is trusted. */
+  trustedProxies: string[];
 }
 
 export interface LogPolicy {

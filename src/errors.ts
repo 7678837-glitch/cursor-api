@@ -2,15 +2,22 @@ export class GatewayError extends Error {
   readonly httpStatus: number;
   readonly code: string;
   readonly openaiType: string;
-  readonly retryAfter?: number;
+  /** Seconds for a `Retry-After` header (429 responses). */
+  retryAfterSeconds?: number;
 
-  constructor(httpStatus: number, code: string, message: string, openaiType: string, retryAfter?: number) {
+  constructor(httpStatus: number, code: string, message: string, openaiType: string) {
     super(message);
     this.name = "GatewayError";
     this.httpStatus = httpStatus;
     this.code = code;
     this.openaiType = openaiType;
-    this.retryAfter = retryAfter;
+  }
+
+  /** `Retry-After` header for errors that carry `retryAfterSeconds` (429 responses). */
+  static retryAfterHeaders(error: unknown): Record<string, string> {
+    return error instanceof GatewayError && error.retryAfterSeconds !== undefined
+      ? { "retry-after": String(error.retryAfterSeconds) }
+      : {};
   }
 }
 
@@ -44,8 +51,8 @@ export function permissionError(message: string): GatewayError {
   return new GatewayError(403, "permission_error", message, "permission_error");
 }
 
-export function rateLimitError(message: string, retryAfter?: number): GatewayError {
-  return new GatewayError(429, "rate_limit_error", message, "rate_limit_error", retryAfter);
+export function rateLimitError(message: string): GatewayError {
+  return new GatewayError(429, "rate_limit_error", message, "rate_limit_error");
 }
 
 export function payloadTooLarge(maxBytes: number): GatewayError {

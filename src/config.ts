@@ -1,8 +1,10 @@
 import fs from "node:fs";
 import path from "node:path";
+import { logWarn } from "./log.js";
 import type { AppConfig } from "./contracts.js";
 
 const MAX_BODY_BYTES = 4_194_304;
+const DEFAULT_HOST = "127.0.0.1";
 const DEFAULT_PORT = 8787;
 const DEFAULT_DATA_DIR = "data";
 const DEFAULT_LOG_RETENTION_DAYS = 7;
@@ -20,7 +22,7 @@ const CONFIG_FILE_NAME = "gateway.toml";
 const EMPTY_CONFIG_TEMPLATE = `# cursor-api configuration (auto-created in container)
 # Fill the three secrets below, then restart the gateway.
 
-host = "0.0.0.0"
+# host = "0.0.0.0"  # unset: Docker image default (GATEWAY_DEFAULT_HOST=0.0.0.0), else 127.0.0.1
 port = 8787
 
 cursor_api_key = ""
@@ -34,6 +36,7 @@ api_key_pepper = ""
 # sse_keepalive_ms = 15000       # 0 disables SSE comment heartbeats
 # auth_failure_limit = 20        # failed auth attempts per address per minute; 0 = off
 # cors_allow_origins = "*"       # comma-separated HTTP origins; empty disables CORS
+# trusted_proxies = ""     # reverse proxy IPs/CIDRs whose X-Forwarded-For is trusted
 
 [logs]
 retention_days = 7
@@ -47,9 +50,12 @@ interface TomlTable {
   [key: string]: string | number | boolean | TomlTable;
 }
 
+export type ConfigWarning = (message: string, fields: Record<string, unknown>) => void;
+
 export function loadConfig(
   env: NodeJS.ProcessEnv = process.env,
   cwd: string = process.cwd(),
+  warn: ConfigWarning = logWarn,
 ): AppConfig {
   const dataDirHint = optionalTrimmed(env.DATA_DIR) ?? DEFAULT_DATA_DIR;
   const dataRoot = path.resolve(cwd, dataDirHint);
@@ -64,7 +70,10 @@ export function loadConfig(
     cwd,
     pickString(env.DATA_DIR, tomlString(toml, "data_dir")) ?? dataDirHint,
   );
-  const defaultHost = production ? "0.0.0.0" : "127.0.0.1";
+  // Listen address priority: GATEWAY_HOST > gateway.toml host > GATEWAY_DEFAULT_HOST > 127.0.0.1.
+  // The Docker image sets GATEWAY_DEFAULT_HOST=0.0.0.0, below the TOML, so a mounted config's host wins.
+  const defaultHost = optionalTrimmed(env.GATEWAY_DEFAULT_HOST) ?? DEFAULT_HOST;
+  warnIfHostOverridden(env, tomlString(toml, "host"), configFile, warn);
 
   return {
     corsAllowOrigins: parseCorsOrigins(env.CORS_ALLOW_ORIGINS ?? tomlString(toml, "cors_allow_origins") ?? "*"),
@@ -150,9 +159,6 @@ export function loadConfig(
       DEFAULT_SSE_KEEPALIVE_MS,
       { min: 1_000, max: 600_000 },
     ),
-    authFailureLimit: parseAuthFailureLimit(
-      pickConfigured(env, "AUTH_FAILURE_LIMIT", intToString(tomlInt(toml, "auth_failure_limit")), "auth_failure_limit"),
-    ),
     maxLiveSessions: parseBoundedInt(
       pickConfigured(env, "MAX_LIVE_SESSIONS", intToString(tomlInt(toml, "max_live_sessions")), "max_live_sessions"),
       DEFAULT_MAX_LIVE_SESSIONS,
@@ -178,7 +184,35 @@ export function loadConfig(
       DEFAULT_PARK_TIMEOUT_MS,
       { min: 5_000, max: 3_600_000 },
     ),
+    authFailureLimit: parseAuthFailureLimit(
+      pickConfigured(
+        env,
+        "AUTH_FAILURE_LIMIT",
+        intToString(tomlInt(toml, "auth_failure_limit")),
+        "auth_failure_limit",
+      ),
+    ),
+    trustedProxies: parseTrustedProxies(
+      pickConfigured(env, "TRUSTED_PROXIES", tomlString(toml, "trusted_proxies"), "trusted_proxies"),
+    ),
   };
+}
+
+/** GATEWAY_HOST silently beating a different gateway.toml `host` is easy to miss; say so at startup. */
+function warnIfHostOverridden(
+  env: NodeJS.ProcessEnv,
+  tomlHost: string | undefined,
+  configFile: string,
+  warn: ConfigWarning,
+): void {
+  const fromEnv = optionalTrimmed(env.GATEWAY_HOST);
+  const fromToml = optionalTrimmed(tomlHost);
+  if (fromEnv === undefined || fromToml === undefined || fromEnv === fromToml) return;
+  warn("GATEWAY_HOST overrides host in gateway.toml", {
+    env_host: fromEnv,
+    toml_host: fromToml,
+    config_file: configFile,
+  });
 }
 
 function ensureConfigFile(configFile: string, production: boolean): void {
@@ -258,6 +292,21 @@ function parsePositiveInt(
   return parsed;
 }
 
+/** Like parseBoundedInt but allows 0, which switches the limit off. */
+function parseAuthFailureLimit(configured: { value: string | undefined; source: string }): number {
+  if (configured.value !== undefined && configured.value.trim() === "0") return 0;
+  return parseBoundedInt(configured, 20, { min: 1, max: 1_000 });
+}
+
+/** Comma-separated IPs or CIDRs; validated when the throttle is configured. */
+function parseTrustedProxies(configured: { value: string | undefined; source: string }): string[] {
+  if (configured.value === undefined) return [];
+  return configured.value
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter((entry) => entry !== "");
+}
+
 function parseBoundedInt(
   configured: { value: string | undefined; source: string },
   fallback: number,
@@ -272,16 +321,12 @@ function parseBoundedInt(
   return parsed;
 }
 
+
 function parseOptionalInterval(
   configured: { value: string | undefined; source: string }, fallback: number, bounds: { min: number; max: number },
 ): number {
   if (optionalTrimmed(configured.value) === "0") return 0;
   return parseBoundedInt(configured, fallback, bounds);
-}
-
-function parseAuthFailureLimit(configured: { value: string | undefined; source: string }): number {
-  if (optionalTrimmed(configured.value) === "0") return 0;
-  return parseBoundedInt(configured, DEFAULT_AUTH_FAILURE_LIMIT, { min: 1, max: 10_000 });
 }
 
 function parseBoolean(

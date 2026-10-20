@@ -1,4 +1,4 @@
-import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
+import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import type { IncomingMessage } from "node:http";
 import type { DatabaseSync } from "node:sqlite";
 import type { ApiKeyRow } from "./contracts.js";
@@ -38,7 +38,7 @@ export function requireClientKey(
   db: DatabaseSync,
   pepper: string,
 ): ApiKeyRow {
-  return guardAuth(req, () => checkClientKey(req, db, pepper));
+  return guardAuth(req, "client", readClientToken(req) !== null, () => checkClientKey(req, db, pepper));
 }
 
 function checkClientKey(req: IncomingMessage, db: DatabaseSync, pepper: string): ApiKeyRow {
@@ -58,7 +58,8 @@ function checkClientKey(req: IncomingMessage, db: DatabaseSync, pepper: string):
 }
 
 export function requireAdminKey(req: IncomingMessage, adminAccessKey: string): void {
-  guardAuth(req, () => checkAdminKey(req, adminAccessKey));
+  const presented = (readAdminToken(req) ?? "").trim();
+  guardAuth(req, "admin", presented !== "", () => checkAdminKey(req, adminAccessKey));
 }
 
 function checkAdminKey(req: IncomingMessage, adminAccessKey: string): void {
@@ -69,13 +70,12 @@ function checkAdminKey(req: IncomingMessage, adminAccessKey: string): void {
   }
 }
 
-function timingSafeEqualUtf8(a: string, b: string): boolean {
-  const left = Buffer.from(a, "utf8");
-  const right = Buffer.from(b, "utf8");
-  if (left.length !== right.length) {
-    const dummy = left.length > 0 ? left : Buffer.alloc(1);
-    timingSafeEqual(dummy, dummy);
-    return false;
-  }
+/**
+ * Constant-time string comparison. Both sides are hashed to fixed-length SHA-256 digests first, so
+ * the comparison takes the same time whatever the lengths are and does not leak the key length.
+ */
+export function timingSafeEqualUtf8(a: string, b: string): boolean {
+  const left = createHash("sha256").update(a, "utf8").digest();
+  const right = createHash("sha256").update(b, "utf8").digest();
   return timingSafeEqual(left, right);
 }

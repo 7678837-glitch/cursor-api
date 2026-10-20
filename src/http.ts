@@ -37,20 +37,15 @@ export function sendOpenAiError(
   extraHeaders?: Record<string, string>,
 ): void {
   const status = httpStatusOf(error);
-  const retryAfter = error instanceof GatewayError ? error.retryAfter : undefined;
   sendJson(res, status, toOpenAiErrorBody(error, requestId), {
     ...(requestId ? { "x-request-id": requestId } : {}),
-    ...(retryAfter !== undefined ? { "retry-after": String(retryAfter) } : {}),
     ...extraHeaders,
+    ...GatewayError.retryAfterHeaders(error),
   });
 }
 
 export function sendSimpleError(res: ServerResponse, error: unknown): void {
-  sendJson(res, httpStatusOf(error), toSimpleErrorBody(error), {
-    ...(error instanceof GatewayError && error.retryAfter !== undefined
-      ? { "retry-after": String(error.retryAfter) }
-      : {}),
-  });
+  sendJson(res, httpStatusOf(error), toSimpleErrorBody(error), GatewayError.retryAfterHeaders(error));
 }
 
 export function readBearer(req: IncomingMessage): string | null {
