@@ -364,9 +364,11 @@ test("8 MiB runs of the new shapes in a stored body do not hit the fail-closed p
   for (const [input, expected] of cases) {
     assert.equal(redactValue({ content: input }).content, expected, input.slice(0, 12));
   }
-  // `eyJ` + a long run without dots is not a JWT: kept as is, not failed closed.
-  const notJwt = `eyJ${"a".repeat(N)} TAIL`;
-  assert.equal(redactValue({ content: notJwt }).content.length, notJwt.length);
+  // Runs that no rule masks are kept as is, not failed closed: `eyJ` without dots is not a JWT,
+  // and `Basic <run>1===` reaches every Basic alternative (and fails them all).
+  for (const kept of [`eyJ${"a".repeat(N)} TAIL`, `Basic ${"a".repeat(N)}1=== TAIL`]) {
+    assert.equal(redactValue({ content: kept }).content.length, kept.length, kept.slice(0, 8));
+  }
 });
 
 test("a field name with a credential shape or a credential word plus a secret is replaced whole", async () => {

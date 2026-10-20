@@ -121,13 +121,16 @@ test("request_logs: the error snapshot written with detailed logging off is reda
 test("request_logs: an error_message echoing a credential word with a secret is masked whole (R3-3 shape)", { timeout: 30_000 }, async () => {
   const SECRET = "FAKEzzSECRETqq1";
   for (const detailed of ["false", "true"]) await errorEchoCase(detailed, SECRET);
+  // A long echo cuts response_detail at detailed_max_bytes, so the final pass in insertRequestLog
+  // only sees invalid JSON and scrubs it as text: the error_message check must run before the cut.
+  await errorEchoCase("true", SECRET, ` ${"x".repeat(6_000)}`);
 });
 
-async function errorEchoCase(detailed, SECRET) {
-  const gateway = await startFakeGateway({ LOG_DETAILED: detailed });
+async function errorEchoCase(detailed, SECRET, pad = "") {
+  const gateway = await startFakeGateway({ LOG_DETAILED: detailed, LOG_DETAILED_MAX_BYTES: "4096" });
   try {
     // `Unknown field '<name>'`: in-place masking alone would keep the secret after `Bearer [redacted]`.
-    const res = await post(gateway, "/v1/chat/completions", { model: "fake-model", messages: [{ role: "user", content: "hi" }], [`Bearer token_abcdefgh ${SECRET}`]: 1 });
+    const res = await post(gateway, "/v1/chat/completions", { model: "fake-model", messages: [{ role: "user", content: "hi" }], [`Bearer token_abcdefgh ${SECRET}${pad}`]: 1 });
     assert.equal(res.status, 400);
     const { listText, details } = await storedRows(gateway);
     assert.equal(details.length, 1);
