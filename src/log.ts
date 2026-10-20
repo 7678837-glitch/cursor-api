@@ -482,6 +482,18 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+/**
+ * Field names. A real field name never carries a credential shape, so a name that any in-place rule
+ * would touch is replaced whole, as is a name with whitespace that the string-value check would
+ * mask (`password <secret>`). In-place masking alone would keep the secret in the R3-3 shape
+ * (`Bearer token_abc <secret>` -> `Bearer [redacted] <secret>`). Ordinary credential names
+ * (`access_token`, `password`) keep their text; their values are masked by isMaskedField.
+ */
+function redactKey(key: string): string {
+  if (scrubSecrets(key) !== key) return REDACTED;
+  return /\s/.test(key) && sanitizeString(key) === REDACTED ? REDACTED : key;
+}
+
 /** Nested objects deeper than this are replaced rather than walked (system log / stored bodies). */
 const MAX_LOG_FIELD_DEPTH = 8;
 const MAX_BODY_DEPTH = 64;
@@ -509,9 +521,9 @@ function redactNode(
     if (Array.isArray(value)) return value.map((item) => redactNode(item, scrubString, depth + 1, maxDepth, seen));
     const safe: Record<string, unknown> = {};
     for (const [key, item] of Object.entries(value)) {
-      // Names can be client-controlled too (an unknown request field, a metadata key), so they get
-      // the same in-place masking as values. Two names that mask to the same text collapse.
-      safe[scrubSecrets(key)] = isMaskedField(classifyKey(key), item)
+      // Names can be client-controlled too (an unknown request field, a metadata key). Two names
+      // that mask to the same text collapse.
+      safe[redactKey(key)] = isMaskedField(classifyKey(key), item)
         ? REDACTED
         : redactNode(item, scrubString, depth + 1, maxDepth, seen);
     }

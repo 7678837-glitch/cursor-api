@@ -368,3 +368,26 @@ test("8 MiB runs of the new shapes in a stored body do not hit the fail-closed p
   const notJwt = `eyJ${"a".repeat(N)} TAIL`;
   assert.equal(redactValue({ content: notJwt }).content.length, notJwt.length);
 });
+
+test("a field name with a credential shape or a credential word plus a secret is replaced whole", async () => {
+  const SECRET = "FAKEzzUNKNOWNqq7";
+  const row = await storedRow({
+    request_detail: JSON.stringify({
+      [`Bearer token_abcdefgh ${SECRET}`]: 1,
+      [`password ${SECRET}`]: 2,
+      access_token: "FAKEzzVALUEqq5",
+      password: { type: "string" },
+      "max_tokens must be set": 4,
+      "plain name": 5,
+    }),
+  });
+  assert.ok(!row.request_detail.includes(SECRET), row.request_detail);
+  assert.ok(!row.request_detail.includes("FAKEzzVALUEqq5"), row.request_detail);
+  const stored = JSON.parse(row.request_detail);
+  assert.equal(stored.access_token, "[redacted]");
+  assert.equal(stored.password, "[redacted]");
+  // Name kept (count phrase + prose word); its value follows the #39 name rules.
+  assert.ok("max_tokens must be set" in stored, row.request_detail);
+  assert.equal(stored["plain name"], 5);
+  assert.ok("[redacted]" in stored);
+});
