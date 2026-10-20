@@ -9,7 +9,7 @@ import { loadConfig } from "./config.js";
 import { resolveModelAlias } from "./model-alias.js";
 import { CursorKeyPool } from "./keypool.js";
 import {
-  getConversationAgentId,
+  getConversationMapping,
   insertRequestLog,
   insertSystemLog,
   openDb,
@@ -46,7 +46,7 @@ import {
   parseResponsesRequest,
   ResponsesStreamWriter,
 } from "./responses.js";
-import { getCursorModel, listCursorModels, runFailureError, validateChatRequestModel, warmCursorAccount } from "./cursor.js";
+import { getCursorModel, listCursorModels, runFailureError, warmCursorAccount } from "./cursor.js";
 import {
   aliasLiveConversation,
   configureSessionLimits,
@@ -294,7 +294,6 @@ async function handleChat(req: IncomingMessage, res: ServerResponse): Promise<vo
     if (config.logDetailed) {
       requestDetail = truncateUtf8(buildRequestDetail(parsed), config.logDetailedMaxBytes);
     }
-    await keyPool.run((apiKey) => validateChatRequestModel(apiKey, parsed));
     const headers = corsHeaders(req, config.corsAllowOrigins);
 
     const abort = new AbortController();
@@ -581,7 +580,6 @@ async function handleMessages(req: IncomingMessage, res: ServerResponse): Promis
     if (config.logDetailed) {
       requestDetail = truncateUtf8(buildRequestDetail(parsed), config.logDetailedMaxBytes);
     }
-    await validateChatRequestModel(config.cursorApiKey, parsed);
     const headers = corsHeaders(req, config.corsAllowOrigins);
 
     const abort = new AbortController();
@@ -618,7 +616,8 @@ async function handleMessages(req: IncomingMessage, res: ServerResponse): Promis
 
       const upstreamStarted = Date.now();
       const result = await runChatTurn({
-        apiKey: config.cursorApiKey,
+        apiKey: keyPool.primary,
+        keyPool,
         apiKeyId: key.id,
         workspaceDir: config.cursorWorkspace,
         request: parsed,
@@ -775,7 +774,6 @@ async function handleResponses(req: IncomingMessage, res: ServerResponse): Promi
     if (config.logDetailed) {
       requestDetail = truncateUtf8(buildRequestDetail(parsed), config.logDetailedMaxBytes);
     }
-    await keyPool.run((apiKey) => validateChatRequestModel(apiKey, parsed));
     const headers = corsHeaders(req, config.corsAllowOrigins);
 
     const abort = new AbortController();
@@ -970,8 +968,10 @@ async function handleResponses(req: IncomingMessage, res: ServerResponse): Promi
 function rememberResponseChain(apiKeyId: string, resumeId: string | undefined, responseId: string): void {
   if (!resumeId || resumeId === responseId) return;
   aliasLiveConversation(apiKeyId, resumeId, responseId);
-  const agentId = getConversationAgentId(db, apiKeyId, resumeId);
-  if (agentId) upsertConversation(db, apiKeyId, responseId, agentId);
+  const mapping = getConversationMapping(db, apiKeyId, resumeId);
+  if (mapping) {
+    upsertConversation(db, apiKeyId, responseId, mapping.agentId, mapping.cursorKeyId);
+  }
 }
 
 function buildRequestDetail(parsed: ParsedChatRequest): string {

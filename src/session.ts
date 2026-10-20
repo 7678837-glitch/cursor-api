@@ -21,12 +21,13 @@ import {
   mapCursorError,
   resolveChatModel,
   resumeLocalChatAgent,
+  runFailureError,
   toChatUsage,
 } from "./cursor.js";
-import { getConversationAgentId, pruneConversations, upsertConversation } from "./db.js";
+import { getConversationMapping, pruneConversations, upsertConversation, type ConversationMapping } from "./db.js";
 import { conversationBusyError, GatewayError, invalidRequest } from "./errors.js";
 import { logError, logInfo } from "./log.js";
-import type { CursorKeyPool } from "./keypool.js";
+import { fingerprintKey, type CursorKeyPool } from "./keypool.js";
 import { imagesOfLastUser, renderTranscript } from "./openai.js";
 
 const DEFAULT_PARK_TIMEOUT_MS = 5 * 60 * 1000;
@@ -56,6 +57,7 @@ interface ParkedCall {
 
 interface LiveSession {
   apiKeyId: string;
+  cursorKeyId: string;
   agent: SDKAgent;
   run: Run | undefined;
   waitPromise: Promise<CursorChatResult> | undefined;
@@ -225,7 +227,9 @@ interface RunChatTurnOptions {
   db?: DatabaseSync;
 }
 
-type TurnOptions = Omit<RunChatTurnOptions, "onClaimed">;
+type TurnOptions = Omit<RunChatTurnOptions, "onClaimed"> & {
+  claimOutput?: () => Promise<void>;
+};
 
 class Deferred<T> {
   readonly promise: Promise<T>;
@@ -414,13 +418,20 @@ export async function withConversationClaim<T>(
 export async function runChatTurn(options: RunChatTurnOptions): Promise<CursorChatResult> {
   const turn = validateChatTurnRequest(options.request);
   return withConversationClaim(options.apiKeyId, options.request.conversation_id, async () => {
-    await options.onClaimed?.();
-    return await runClaimedChatTurn(options, turn);
+    let outputClaimed = false;
+    const claimOutput = options.onClaimed
+      ? async (): Promise<void> => {
+          if (outputClaimed) return;
+          outputClaimed = true;
+          await options.onClaimed?.();
+        }
+      : undefined;
+    return await runClaimedChatTurn({ ...options, claimOutput }, turn);
   });
 }
 
 async function runClaimedChatTurn(
-  options: RunChatTurnOptions,
+  options: TurnOptions,
   turn: ChatTurnKind,
 ): Promise<CursorChatResult> {
   const lookupKey = sessionKey(options.apiKeyId, hashMessages(turn.stem));
@@ -439,25 +450,30 @@ async function runClaimedChatTurn(
   if (turn.kind === "user" && liveConv && liveConv.parks.size > 0) {
     throw invalidRequest("Pending tool calls; send tool results before the next user message");
   }
-  const storedAgentId =
+  const storedConversation =
     options.db && conversationId
-      ? getConversationAgentId(options.db, options.apiKeyId, conversationId)
+      ? getConversationMapping(options.db, options.apiKeyId, conversationId)
       : undefined;
   const action = resolveTurnAction({
     turn,
     hasParkedSession: Boolean(parked),
     conversationId,
-    canResumeConversation: liveConv ? liveConv.parks.size === 0 : Boolean(storedAgentId),
+    canResumeConversation: liveConv ? liveConv.parks.size === 0 : Boolean(storedConversation),
   });
 
   if (action === "continue_park" && turn.kind === "tool_results" && parked) {
+    await options.claimOutput?.();
     rememberConversation(parked, options);
     parked.sink = options.sink;
     parked.parkTimeoutMs = options.parkTimeoutMs ?? parked.parkTimeoutMs;
     applyToolResults(parked, turn.results);
     parked.lastRequestMessages = options.request.messages;
     indexSession(parked, options.apiKeyId, hashMessages(options.request.messages));
-    return await continueRun(parked, options.abortSignal);
+    const operation = async (): Promise<CursorChatResult> =>
+      ensureSuccessfulRun(await continueRun(parked, options.abortSignal));
+    return options.keyPool
+      ? await options.keyPool.runForId(parked.cursorKeyId, async () => await operation())
+      : await operation();
   }
 
   if (action === "replay_transcript") {
@@ -469,7 +485,7 @@ async function runClaimedChatTurn(
   }
 
   if (action === "resume_user" && turn.kind === "user") {
-    return await resumeUserTurn(turn, options, storedAgentId);
+    return await resumeUserTurn(turn, options, storedConversation);
   }
 
   if (turn.kind !== "user") {
@@ -481,15 +497,60 @@ async function runClaimedChatTurn(
 async function resumeUserTurn(
   turn: Extract<ChatTurnKind, { kind: "user" }>,
   options: TurnOptions,
-  storedAgentId: string | undefined,
+  stored: ConversationMapping | undefined,
 ): Promise<CursorChatResult> {
-  if (!storedAgentId) {
+  if (!stored) {
     return await startNewSession(turn, options);
   }
-  if (options.keyPool) {
-    options = { ...options, apiKey: options.keyPool.pick() ?? options.apiKey };
+  const pool = options.keyPool;
+  if (!pool) {
+    return await resumeUserTurnWithKey(turn, options, stored.agentId);
   }
+  if (!stored.cursorKeyId && pool.size > 1) {
+    if (turn.stem.length > 0) {
+      logInfo("replaying legacy conversation with full transcript", {
+        api_key_id: options.apiKeyId,
+        conversation_id: options.request.conversation_id ?? null,
+      });
+      return await startNewSession(turn, options);
+    }
+    throw new GatewayError(
+      409,
+      "conversation_key_unknown",
+      "This legacy conversation has no Cursor key owner; resend the full message history",
+      "invalid_request_error",
+    );
+  }
+  const ownerId = stored.cursorKeyId ?? pool.primaryId;
+  let emitted = false;
+  const sink = options.request.stream
+    ? trackEmission(options.sink, () => {
+        emitted = true;
+      })
+    : options.sink;
+  try {
+    return await pool.runForId(ownerId, async (apiKey) =>
+      ensureSuccessfulRun(await resumeUserTurnWithKey(turn, { ...options, apiKey, sink }, stored.agentId)),
+    );
+  } catch (error) {
+    if (turn.stem.length === 0 || emitted || options.abortSignal.aborted) throw error;
+    logInfo("conversation resume failed, replaying full transcript", {
+      api_key_id: options.apiKeyId,
+      conversation_id: options.request.conversation_id ?? null,
+      agent_id: stored.agentId,
+      code: error instanceof GatewayError ? error.code : "upstream_error",
+    });
+    return await startNewSession(turn, options);
+  }
+}
+
+async function resumeUserTurnWithKey(
+  turn: Extract<ChatTurnKind, { kind: "user" }>,
+  options: TurnOptions,
+  storedAgentId: string,
+): Promise<CursorChatResult> {
   const model = await resolveChatModel(options.apiKey, options.request);
+  await options.claimOutput?.();
   const releaseCapacity = await reserveSessionCapacity(options.apiKeyId);
   const session = emptySession(options, model.params);
   const customTools = buildCustomTools(session, options.request.tools, options.request.tool_choice);
@@ -503,13 +564,7 @@ async function resumeUserTurn(
     });
   } catch (error) {
     releaseCapacity();
-    logInfo("conversation resume failed, starting new", {
-      api_key_id: options.apiKeyId,
-      conversation_id: options.request.conversation_id ?? null,
-      agent_id: storedAgentId,
-      code: error instanceof GatewayError ? error.code : "upstream_error",
-    });
-    return await startNewSession(turn, options);
+    throw error;
   }
   logInfo("resumed stored conversation", {
     api_key_id: options.apiKeyId,
@@ -543,30 +598,20 @@ async function startAgentSession(prompt: string, options: TurnOptions): Promise<
   }
   // Fail over only while nothing has reached the client; afterwards a retry would duplicate output.
   let emitted = false;
-  const sink: ChatTurnSink | undefined = options.sink
-    ? {
-        onText: async (text) => {
-          if (text !== "") emitted = true;
-          await options.sink?.onText(text);
-        },
-        onThinking: async (text) => {
-          if (text !== "") emitted = true;
-          await options.sink?.onThinking(text);
-        },
-        onToolCalls: async (calls) => {
-          emitted = true;
-          await options.sink?.onToolCalls(calls);
-        },
-      }
-    : undefined;
+  const sink: ChatTurnSink | undefined = options.request.stream
+    ? trackEmission(options.sink, () => {
+        emitted = true;
+      })
+    : options.sink;
   return await pool.run(
-    async (apiKey) => await startAgentSessionWithKey(prompt, { ...options, apiKey, sink }),
+    async (apiKey) => ensureSuccessfulRun(await startAgentSessionWithKey(prompt, { ...options, apiKey, sink })),
     () => !emitted && !options.abortSignal.aborted,
   );
 }
 
 async function startAgentSessionWithKey(prompt: string, options: TurnOptions): Promise<CursorChatResult> {
   const model = await resolveChatModel(options.apiKey, options.request);
+  await options.claimOutput?.();
   const releaseCapacity = await reserveSessionCapacity(options.apiKeyId);
   const session = emptySession(options, model.params);
   const customTools = buildCustomTools(session, options.request.tools, options.request.tool_choice);
@@ -594,6 +639,7 @@ async function startAgentSessionWithKey(prompt: string, options: TurnOptions): P
 
 function emptySession(
   options: {
+    apiKey: string;
     apiKeyId: string;
     request: ParsedChatRequest;
     sink?: ChatTurnSink;
@@ -603,6 +649,7 @@ function emptySession(
 ): LiveSession {
   return {
     apiKeyId: options.apiKeyId,
+    cursorKeyId: fingerprintKey(options.apiKey),
     agent: undefined as unknown as SDKAgent,
     run: undefined,
     waitPromise: undefined,
@@ -635,8 +682,39 @@ function rememberConversation(
   session.conversationId = conversationId;
   indexSession(session, options.apiKeyId, `conv:${conversationId}`);
   if (options.db) {
-    upsertConversation(options.db, options.apiKeyId, conversationId, session.agent.agentId);
+    upsertConversation(
+      options.db,
+      options.apiKeyId,
+      conversationId,
+      session.agent.agentId,
+      session.cursorKeyId,
+    );
   }
+}
+
+function ensureSuccessfulRun(result: CursorChatResult): CursorChatResult {
+  if (result.status === "error" || result.finish_reason === "error") {
+    throw runFailureError(result.error);
+  }
+  return result;
+}
+
+function trackEmission(sink: ChatTurnSink | undefined, mark: () => void): ChatTurnSink | undefined {
+  if (!sink) return undefined;
+  return {
+    onText: async (text) => {
+      if (text !== "") mark();
+      await sink.onText(text);
+    },
+    onThinking: async (text) => {
+      if (text !== "") mark();
+      await sink.onThinking(text);
+    },
+    onToolCalls: async (calls) => {
+      mark();
+      await sink.onToolCalls(calls);
+    },
+  };
 }
 
 async function sendOnSession(

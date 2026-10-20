@@ -80,6 +80,10 @@ export class CursorKeyPool {
     return this.entries[0]?.key ?? "";
   }
 
+  get primaryId(): string {
+    return this.entries[0]?.id ?? "";
+  }
+
   /**
    * Next key to use. Healthy keys rotate round-robin; `exclude` skips keys
    * that already failed for this request. When every candidate is cooling
@@ -188,12 +192,38 @@ export class CursorKeyPool {
       } catch (error) {
         lastError = error;
         const keySpecific = this.reportFailure(key, error);
-        if (!keySpecific || tried.size >= this.entries.length || !canRetry(error)) {
+        const candidateSpecific = error instanceof GatewayError && error.code === "model_not_found";
+        if ((!keySpecific && !candidateSpecific) || tried.size >= this.entries.length || !canRetry(error)) {
           throw error;
         }
       } finally {
         release();
       }
+    }
+  }
+
+  /** Runs against the key that owns a persisted agent; ownership must never fail over. */
+  async runForId<T>(id: string, fn: (key: string) => Promise<T>): Promise<T> {
+    const entry = this.entries.find((candidate) => candidate.id === id);
+    if (!entry) {
+      throw new GatewayError(
+        503,
+        "conversation_key_unavailable",
+        "The Cursor key that owns this conversation is no longer configured",
+        "upstream_error",
+      );
+    }
+    entry.lastUsedAt = this.now();
+    const release = this.acquire(entry.key);
+    try {
+      const value = await fn(entry.key);
+      this.reportSuccess(entry.key);
+      return value;
+    } catch (error) {
+      this.reportFailure(entry.key, error);
+      throw error;
+    } finally {
+      release();
     }
   }
 

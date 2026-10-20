@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { loadConfig } from "../dist/config.js";
-import { cancelledError, rateLimitError, upstreamAuthError, upstreamError } from "../dist/errors.js";
+import { cancelledError, modelNotFound, rateLimitError, upstreamAuthError, upstreamError } from "../dist/errors.js";
 import {
   AUTH_FAILURE_COOLDOWN_MS,
   classifyKeyFailure,
@@ -151,6 +151,34 @@ test("key pool run fails over only on key-specific errors and honors canRetry", 
     (error) => error.code === "upstream_authentication_error",
   );
   assert.deepEqual(all, ["a", "b"]);
+});
+
+test("model mismatch tries another healthy key without cooling it down", async () => {
+  const pool = new CursorKeyPool(["a", "b"], { cooldownMs: 1000 });
+  const seen = [];
+  const value = await pool.run(async (key) => {
+    seen.push(key);
+    if (key === "a") throw modelNotFound("only-on-b");
+    return "ok";
+  });
+  assert.equal(value, "ok");
+  assert.deepEqual(seen, ["a", "b"]);
+  assert.deepEqual(pool.snapshot().map((key) => key.state), ["healthy", "healthy"]);
+  assert.deepEqual(pool.snapshot().map((key) => key.failures), [0, 0]);
+});
+
+test("owned-key runs have balanced accounting and fail safely when the key was removed", async () => {
+  const pool = new CursorKeyPool(["a", "b"], { cooldownMs: 1000 });
+  const value = await pool.runForId(fingerprintKey("b"), async (key) => `ok:${key}`);
+  assert.equal(value, "ok:b");
+  const status = pool.snapshot().find((key) => key.id === fingerprintKey("b"));
+  assert.equal(status.requests, 1);
+  assert.equal(status.successes, 1);
+  assert.equal(status.active_requests, 0);
+  await assert.rejects(
+    pool.runForId(fingerprintKey("removed"), async () => "impossible"),
+    (error) => error.code === "conversation_key_unavailable",
+  );
 });
 
 test("key failures are classified and fingerprints never contain the key", () => {

@@ -53,6 +53,12 @@ const CATALOG = [
   },
 ];
 
+function catalogForKey(apiKey) {
+  if (apiKey.startsWith("model-a-")) return [{ ...CATALOG[0], id: "fake-model-a", aliases: [] }];
+  if (apiKey.startsWith("model-b-")) return [{ ...CATALOG[0], id: "fake-model-b", aliases: [] }];
+  return CATALOG;
+}
+
 /** Keys starting with these prefixes simulate upstream failures. */
 function checkKey(apiKey) {
   if (typeof apiKey !== "string" || apiKey.startsWith("bad-")) {
@@ -70,7 +76,7 @@ export const Cursor = {
   models: {
     async list({ apiKey }) {
       checkKey(apiKey);
-      return CATALOG;
+      return catalogForKey(apiKey);
     },
   },
   async me({ apiKey }) {
@@ -80,6 +86,7 @@ export const Cursor = {
 };
 
 let agentSeq = 0;
+const agentOwners = new Map();
 
 function makeAgent(apiKey, agentId, model) {
   return {
@@ -119,6 +126,11 @@ function makeAgent(apiKey, agentId, model) {
         }
         if (prompt.includes("ECHO_MODEL")) {
           text = JSON.stringify(model ?? null);
+          await emit({ type: "text-delta", text });
+          return;
+        }
+        if (prompt.includes("ECHO_AGENT")) {
+          text = agentId;
           await emit({ type: "text-delta", text });
           return;
         }
@@ -172,10 +184,16 @@ export const Agent = {
     checkKey(options.apiKey);
     agentSeq += 1;
     calls.create.push({ apiKey: options.apiKey });
-    return makeAgent(options.apiKey, `agent-${String(agentSeq)}`, options.model);
+    const agentId = `agent-${String(agentSeq)}`;
+    agentOwners.set(agentId, options.apiKey);
+    return makeAgent(options.apiKey, agentId, options.model);
   },
   async resume(agentId, options) {
     checkKey(options.apiKey);
+    const owner = agentOwners.get(agentId);
+    if (owner !== undefined && owner !== options.apiKey) {
+      throw new AuthenticationError("agent belongs to another Cursor key");
+    }
     return makeAgent(options.apiKey, agentId, options.model);
   },
 };
