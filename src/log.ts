@@ -243,6 +243,17 @@ function sanitizeString(value: string): string {
   return scrubSecrets(capped);
 }
 
+/**
+ * Free text from outside (upstream error messages) that will be logged or echoed: the same
+ * treatment as a string field value. Capped first, then the whole-value check runs on the raw text,
+ * then in-place scrubbing. Callers must use this instead of `scrubSecrets` when the result is later
+ * logged as a field: scrubbing first lets a rule swallow the keyword (`Bearer token_abc <secret>`)
+ * and the later whole-value check then sees no credential word (r3 review R3-3).
+ */
+export function redactLogText(text: string): string {
+  return sanitizeString(text);
+}
+
 /** Log messages: in-place masking only (no whole-value fallback), after the same length cap. */
 function scrubMessage(message: string): string {
   return scrubSecrets(capLogString(message));
