@@ -7,6 +7,7 @@ import {
   toAnthropicErrorBody,
 } from "../dist/anthropic.js";
 import { GatewayError, invalidRequest, rateLimitError } from "../dist/errors.js";
+import { sendAnthropicError } from "../dist/http.js";
 import { CLIENT_KEY, parseSse, startFakeGateway } from "./fixtures/gateway-harness.mjs";
 
 test("anthropic parse maps system, text, images, tools and tool_choice", () => {
@@ -329,4 +330,20 @@ test("POST /v1/messages works end to end against a fake Cursor SDK", { timeout: 
   } finally {
     await gateway.stop();
   }
+});
+
+
+test("Anthropic authentication throttling retains Retry-After", () => {
+  const error = rateLimitError("Too many failed authentications");
+  error.retryAfterSeconds = 42;
+  let status;
+  let headers;
+  let payload;
+  sendAnthropicError({
+    writeHead(value, fields) { status = value; headers = fields; },
+    end(value) { payload = JSON.parse(value); },
+  }, error, "test-request");
+  assert.equal(status, 429);
+  assert.equal(headers["retry-after"], "42");
+  assert.equal(payload.error.type, "rate_limit_error");
 });

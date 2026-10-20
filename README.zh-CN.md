@@ -218,7 +218,7 @@ claude -p "Reply with PONG"
 - `messages` 里的 `system` 消息会作为 `[system]` 上下文并入前一条 user / tool 消息，这样工具轮次能继续命中停车的 Cursor 会话，不必重放整个 transcript。
 - `thinking` / `output_config.effort` 映射为尽力而为的推理档位（effort `low`–`max`；`budget_tokens` <4k → low，<16k → medium，否则 high；`disabled` → 最低档）。没有 effort 参数的模型忽略。
 - 历史里的服务端工具块（`server_tool_use`、`web_search_tool_result` 等）会跳过，`cache_control` 会忽略。
-- `POST /v1/messages/count_tokens` 返回**粗略的本地估算**（响应头 `x-token-count-estimated: true`；约 4 个 ASCII 字符或 1 个非 ASCII 字符算 1 个 token），Claude Code 的 `/context` 会用到。设置 `anthropic_count_tokens = "off"`（环境变量 `ANTHROPIC_COUNT_TOKENS`）则返回 404，Claude Code 会退回自己的估算。
+- `POST /v1/messages/count_tokens` **默认返回 404**，因为 SDK 没有精确 tokenizer。设置 `anthropic_count_tokens = "estimate"`（环境变量 `ANTHROPIC_COUNT_TOKENS`）可启用粗略本地估算（响应头 `x-token-count-estimated: true`；约 4 个 ASCII 字符或 1 个非 ASCII 字符算 1 个 token）。估算有误差，可能影响客户端上下文压缩判断，不能视为真实用量。
 - `HEAD /api/hello`（Claude Code 的连通性探测）返回 404，Claude Code 能容忍。
 
 ### Codex（`POST /v1/responses`）

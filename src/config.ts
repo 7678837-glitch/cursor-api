@@ -45,7 +45,7 @@ api_key_pepper = ""
 # cors_allow_origins = "*"       # comma-separated HTTP origins; empty disables CORS
 # trusted_proxies = ""     # reverse proxy IPs/CIDRs whose X-Forwarded-For is trusted
 # POST /v1/messages/count_tokens: "estimate" (rough local count) or "off" (404)
-# anthropic_count_tokens = "estimate"
+# anthropic_count_tokens = "off"
 # Map client model names onto Cursor models (first match wins, * is a wildcard):
 # model_aliases = "claude-opus-*=composer-2.5, claude-sonnet-*=composer-2.5, claude-haiku-*=composer-2.5"
 
@@ -253,8 +253,8 @@ function ensureConfigFile(configFile: string, production: boolean): void {
 
 function parseCountTokensMode(configured: { value: string | undefined; source: string }): "estimate" | "off" {
   const value = optionalTrimmed(configured.value)?.toLowerCase();
-  if (value === undefined || value === "estimate") return "estimate";
-  if (value === "off") return "off";
+  if (value === undefined || value === "off") return "off";
+  if (value === "estimate") return "estimate";
   throw new Error(`${configured.source} must be "estimate" or "off" (got ${JSON.stringify(configured.value)})`);
 }
 

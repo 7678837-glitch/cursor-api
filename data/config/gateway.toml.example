@@ -12,6 +12,9 @@ cursor_api_key = ""
 # and fail over on upstream auth / rate-limit errors.
 # cursor_api_keys = ""
 # cursor_key_cooldown_ms = 60000
+# cursor_key_strategy = "round_robin"
+# anthropic_count_tokens = "off"  # "estimate" enables approximate local token counts
+# model_aliases = "claude-*=composer-2.5"
 admin_access_key = ""
 api_key_pepper = ""
 

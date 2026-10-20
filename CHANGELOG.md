@@ -9,7 +9,18 @@ Version numbers use **`YYYYMMDD.N`** (date + same-day increment). The single sou
 
 ---
 
-## [Unreleased]
+## [20261020.1] — 2026-10-20
+
+### Added
+
+- 集成 Anthropic Messages、Claude Code 工具往返、模型别名和推理档位支持；本地 token 估算需显式开启，默认返回 404。
+- 集成 Cursor 多 Key 轮换、冷却、故障切换、least_active 策略及管理台状态面板。
+
+### Fixed
+
+- 会话及 Responses 续接绑定原上游 Key，持久化仅保存指纹；跨账号模型验证与运行使用同一 Key。
+- 工具续接参与 Key 池负载统计；已向客户端输出内容后停止故障切换。
+- Anthropic 限流错误保留 Retry-After 响应头。
 
 ### Changed (BREAKING)
 

@@ -195,7 +195,7 @@ ANTHROPIC_API_KEY=<your cgk_ client key>      # sent as x-api-key
 - Cursor knobs (`params`, `variant`, `reasoning_effort`, `verbosity`, `fast`, `optimize_for`) and `conversation_id` / `metadata.conversation_id` work as on Chat Completions.
 - Errors use the Anthropic shape: `{"type":"error","error":{"type":"invalid_request_error","message":"…"}}`.
 - `usage.input_tokens` / `output_tokens` / `cache_read_input_tokens` / `cache_creation_input_tokens` come from Cursor token usage; `cursor.cost` is included on non-stream responses.
-- `POST /v1/messages/count_tokens` returns a rough estimate (see Claude Code below).
+- `POST /v1/messages/count_tokens` is disabled by default; an optional rough estimate is available (see Claude Code below).
 
 ### Claude Code
 
@@ -216,7 +216,7 @@ What the gateway does with Claude Code traffic:
 - `system` messages inside `messages` are folded into the preceding user / tool turn as `[system]` context, so tool rounds keep matching the parked Cursor session instead of replaying the transcript.
 - `thinking` / `output_config.effort` become a best-effort reasoning level (effort `low`–`max`; `budget_tokens` <4k → low, <16k → medium, otherwise high; `disabled` → lowest). Models without an effort parameter ignore it.
 - Server tool blocks (`server_tool_use`, `web_search_tool_result`, …) in history are skipped, and `cache_control` is ignored.
-- `POST /v1/messages/count_tokens` returns a **rough local estimate** (`x-token-count-estimated: true`; ~4 ASCII chars or 1 non-ASCII char per token). Claude Code uses it for `/context`. Set `anthropic_count_tokens = "off"` (env `ANTHROPIC_COUNT_TOKENS`) to return 404 instead; Claude Code then falls back to its own estimate.
+- `POST /v1/messages/count_tokens` returns **404 by default** because the SDK has no exact tokenizer. Set `anthropic_count_tokens = "estimate"` (env `ANTHROPIC_COUNT_TOKENS`) to enable a rough local estimate (`x-token-count-estimated: true`; ~4 ASCII chars or 1 non-ASCII char per token). This can mislead client context compaction decisions; it is not exact token usage.
 - `HEAD /api/hello` (a Claude Code connectivity probe) gets 404, which Claude Code tolerates.
 
 ### Codex (`POST /v1/responses`)

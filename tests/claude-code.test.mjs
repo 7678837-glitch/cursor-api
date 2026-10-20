@@ -107,8 +107,8 @@ test("model_aliases parse globs, keep order, and reject malformed entries", () =
   );
   const cfg = loadConfig({ DATA_DIR: "data" }, root);
   assert.equal(resolveModelAlias(cfg.modelAliases, "claude-sonnet-4-5"), "composer-2.5");
-  assert.equal(cfg.anthropicCountTokens, "estimate");
-  assert.equal(loadConfig({ DATA_DIR: "data", ANTHROPIC_COUNT_TOKENS: "off" }, root).anthropicCountTokens, "off");
+  assert.equal(cfg.anthropicCountTokens, "off");
+  assert.equal(loadConfig({ DATA_DIR: "data", ANTHROPIC_COUNT_TOKENS: "estimate" }, root).anthropicCountTokens, "estimate");
   assert.throws(() => loadConfig({ DATA_DIR: "data", ANTHROPIC_COUNT_TOKENS: "exact" }, root), /ANTHROPIC_COUNT_TOKENS/);
   assert.throws(() => loadConfig({ DATA_DIR: "data", MODEL_ALIASES: "broken" }, root), /model_aliases/);
 });
@@ -128,7 +128,7 @@ test("count_tokens estimate scales with content and ignores cache metadata", () 
 });
 
 test("Claude Code flow over HTTP: aliases, folded system, parked tool round, count_tokens", { timeout: 20_000 }, async () => {
-  const gateway = await startFakeGateway({ MODEL_ALIASES: "claude-*=fake-model" });
+  const gateway = await startFakeGateway({ MODEL_ALIASES: "claude-*=fake-model", ANTHROPIC_COUNT_TOKENS: "estimate" });
   const headers = {
     "x-api-key": CLIENT_KEY,
     "anthropic-version": "2023-06-01",
@@ -180,7 +180,7 @@ test("Claude Code flow over HTTP: aliases, folded system, parked tool round, cou
     await gateway.stop();
   }
 
-  const off = await startFakeGateway({ ANTHROPIC_COUNT_TOKENS: "off" });
+  const off = await startFakeGateway();
   try {
     const res = await fetch(`${off.baseUrl}/v1/messages/count_tokens`, {
       method: "POST",

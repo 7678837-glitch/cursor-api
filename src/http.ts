@@ -54,6 +54,7 @@ export function sendAnthropicError(
   sendJson(res, httpStatusOf(error), toAnthropicErrorBody(error, requestId), {
     ...(requestId ? { "x-request-id": requestId, "request-id": requestId } : {}),
     ...extraHeaders,
+    ...GatewayError.retryAfterHeaders(error),
   });
 }
 
