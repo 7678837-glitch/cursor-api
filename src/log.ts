@@ -138,8 +138,8 @@ const VALUE_KEYWORDS = /api[_-]?key|authorization|pepper|secret|token|password|p
 /**
  * Exact count phrases that mention `tokens` without carrying a credential: the COUNT_KEYS names
  * (snake or camelCase, e.g. `max_tokens`, `inputTokens`) and `<number> tokens`. Every alternative is
- * anchored with `\b` and has bounded length, so the scan is linear. A phrase used as a name with a
- * non-numeric value (`max_tokens=abc`) is not exempt; see countPhraseCarriesValue.
+ * anchored with `\b` and has bounded length, so the scan is linear. A phrase is only exempt when an
+ * allow-listed item follows it (a number, `null`, the end, a prose word); see countPhraseIsBenign.
  */
 const COUNT_PHRASE =
   /\b(?:(?:max_?(?:output_?|completion_?)?|input_?|output_?|total_?|prompt_?|completion_?|reasoning_?|cached_?|cache_?(?:read|write|creation)_?(?:input_?)?|budget_?)tokens|prompt_?token_?count|\d{1,12}(?:,\d{3}){0,6}[ \t]{0,3}tokens)\b/gi;
@@ -167,33 +167,106 @@ function isWordBreak(code: number): boolean {
   );
 }
 
-/** Separator characters skipped around `:`/`=` when deciding whether a count phrase is a name. */
+/** Whitespace, quotes and backslashes skipped between the items that may follow a count phrase. */
 function isPhraseFiller(char: string | undefined): boolean {
-  return char === "\\" || char === '"' || char === "'" || char === " " || char === "\t";
+  return char === "\\" || char === '"' || char === "'" || char === " " || char === "\t" || char === "\n" || char === "\r";
+}
+
+/** Separators and closing punctuation that may sit between a count phrase and its number. */
+function isPhrasePunct(char: string | undefined): boolean {
+  return (
+    char === ":" || char === "=" || char === "," || char === "." || char === ";" ||
+    char === ")" || char === "}" || char === "]" || char === ">" || char === "<"
+  );
+}
+
+function isWordChar(code: number): boolean {
+  return (code >= 0x30 && code <= 0x39) || (code >= 0x41 && code <= 0x5a) || (code >= 0x61 && code <= 0x7a) || code === 0x5f;
 }
 
 /**
- * True when a count phrase is used as a field name with a non-numeric value: `max_tokens=abc`,
- * `"max_tokens":"abc"`, `max_tokens: abc`. Looks at a bounded window after the phrase (no regex).
+ * Prose words allowed right after a count phrase or its number (`max_tokens must be …`,
+ * `8192 exceeds the limit`, `210000 tokens > 200000 maximum`). `is` alone is not one of them
+ * (`max_tokens is <secret>`); `is too` is.
  */
-function countPhraseCarriesValue(text: string, end: number): boolean {
-  let i = end;
-  const limit = Math.min(text.length, end + 8);
-  while (i < limit && isPhraseFiller(text[i])) i += 1;
-  if (i >= text.length || (text[i] !== ":" && text[i] !== "=")) return false;
-  i += 1;
-  const valueLimit = Math.min(text.length, i + 8);
-  while (i < valueLimit && isPhraseFiller(text[i])) i += 1;
-  if (i >= text.length) return false;
-  const code = text.charCodeAt(i);
-  if (code >= 0x30 && code <= 0x39) return false; // `max_tokens: 4096`
-  return !text.startsWith("null", i);
+const COUNT_PROSE_WORDS = new Set(["must", "should", "cannot", "exceeds", "exceeded", "exceed", "limit", "of", "maximum"]);
+const MAX_PHRASE_FILLER = 8;
+const MAX_PHRASE_NUMBER_CHARS = 24;
+const MAX_PHRASE_ITEMS = 4;
+
+/** End of a number (`4096`, `-1`, `1,234`, `0.5`) or `null` starting at `i`, followed by a word break; -1 if none. */
+function countValueEnd(text: string, i: number): number {
+  if (text.startsWith("null", i)) {
+    return i + 4 >= text.length || !isWordChar(text.charCodeAt(i + 4)) ? i + 4 : -1;
+  }
+  let j = i;
+  if (text[j] === "-") j += 1;
+  const first = text.charCodeAt(j);
+  if (!(first >= 0x30 && first <= 0x39)) return -1;
+  const limit = Math.min(text.length, i + MAX_PHRASE_NUMBER_CHARS);
+  while (j < limit) {
+    const code = text.charCodeAt(j);
+    if ((code >= 0x30 && code <= 0x39) || code === 0x2c || code === 0x2e) j += 1;
+    else break;
+  }
+  if (j < text.length && isWordChar(text.charCodeAt(j))) return -1; // `9FAKEpw`, a 25+ digit run
+  return j;
 }
 
-/** The raw value with exact count phrases blanked out; used only to look for credential words. */
+/** The ASCII word (at most 12 letters) starting at `i`, lower-cased, or "" when it is longer or not a word. */
+function proseWordAt(text: string, i: number): string {
+  let j = i;
+  const limit = Math.min(text.length, i + 12);
+  while (j < limit) {
+    const code = text.charCodeAt(j) | 0x20;
+    if (code >= 0x61 && code <= 0x7a) j += 1;
+    else break;
+  }
+  if (j === i || (j < text.length && isWordChar(text.charCodeAt(j)))) return "";
+  return text.slice(i, j).toLowerCase();
+}
+
+/**
+ * Allow-list for what follows an exact count phrase (r3 review R3-2). The phrase excuses its
+ * `tokens` only when it is followed by: the end of the value; a number or `null` (optionally after
+ * `:`/`=`, quotes or closing punctuation), itself followed by one of these; or a prose word from
+ * COUNT_PROSE_WORDS (or `is too`). Anything else right after the phrase or after its number
+ * (`max_tokens=9abc`, `max_tokens: 1 abc`, `max_tokens -> abc`, `max_tokens(abc)`, newline + word,
+ * `used 12 tokens abc`) keeps the phrase, so the value is masked whole. Bounded window per phrase,
+ * no regex, so the scan stays linear.
+ */
+function countPhraseIsBenign(text: string, end: number): boolean {
+  let i = end;
+  for (let item = 0; item < MAX_PHRASE_ITEMS; item += 1) {
+    const fillerLimit = Math.min(text.length, i + MAX_PHRASE_FILLER);
+    while (i < fillerLimit && isPhraseFiller(text[i])) i += 1;
+    if (i >= text.length) return true;
+    if (isPhraseFiller(text[i])) return false; // more filler than the window
+    if (isPhrasePunct(text[i])) {
+      i += 1;
+      continue;
+    }
+    const valueEnd = countValueEnd(text, i);
+    if (valueEnd > i) {
+      i = valueEnd;
+      continue;
+    }
+    const word = proseWordAt(text, i);
+    if (COUNT_PROSE_WORDS.has(word)) return true;
+    if (word === "is") {
+      let k = i + 2;
+      while (k < text.length && k < i + 2 + MAX_PHRASE_FILLER && (text[k] === " " || text[k] === "\t")) k += 1;
+      return k > i + 2 && proseWordAt(text, k) === "too";
+    }
+    return false;
+  }
+  return false;
+}
+
+/** The raw value with benign exact count phrases blanked out; used only to look for credential words. */
 function withoutCountPhrases(text: string): string {
   return text.replace(COUNT_PHRASE, (phrase: string, offset: number, whole: string) =>
-    countPhraseCarriesValue(whole, offset + phrase.length) ? phrase : " ",
+    countPhraseIsBenign(whole, offset + phrase.length) ? " " : phrase,
   );
 }
 

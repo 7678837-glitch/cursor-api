@@ -178,17 +178,11 @@ function leakingVariants(secret) {
 
 test("plural and count-like phrasing never excuses a credential word in a field value", () => {
   assert.deepEqual(leakingVariants(S), [], "secret-shaped value");
-  // A short, plain-word secret right after a bare count field name reads like prose
-  // ("max_tokens must be ..."), so only that exact form is let through; nothing else.
+  // r3 R3-2: what follows a count phrase is allow-listed, so a short plain-word secret is masked too.
   const short = "hunter2pw";
-  assert.deepEqual(leakingVariants(short), [
-    `max_tokens ${short}`,
-    `max_tokens is ${short}`,
-    `access-max_tokens ${short}`,
-    `access-max_tokens is ${short}`,
-    `Bearer max_tokens ${short}`,
-    `Bearer max_tokens is ${short}`,
-  ]);
+  assert.deepEqual(leakingVariants(short), [], "short plain-word secret");
+  assert.deepEqual(leakingVariants("9FAKEpw"), [], "digit-first short secret");
+  assert.deepEqual(leakingVariants("FAKEz1x2y3w4v5u"), [], "15-character letter-and-digit secret");
   for (const value of [`the token is ${short}`, `refresh tokens: ${short}`, `token count ${short}`, `max_tokens=${short}`, `"max_tokens":"${short}"`]) {
     assert.equal(sanitizeFields({ detail: value }).detail, REDACTED, value);
   }
@@ -213,6 +207,13 @@ test("count wording without a secret stays readable", () => {
     "max_tokens: 4096",
     "maxOutputTokens 8192 exceeds the limit",
     "used 1,234 tokens",
+    "used 1,234 tokens.",
+    '{"max_tokens":4096}',
+    '{"max_tokens":null}',
+    "max_tokens=-1 is too small",
+    "max_tokens is too large",
+    "max_completion_tokens cannot exceed 4096",
+    "budget_tokens should be less than max_tokens",
   ]) {
     assert.equal(sanitizeFields({ error: value }).error, value);
   }
@@ -300,5 +301,42 @@ test("scrubSecrets handles 16 MiB secret-shaped runs without RangeError and mask
     }, name);
     assert.ok(out.length < 64, `${name}: ${out.length} chars left`);
     assert.ok(out.endsWith(REDACTED), `${name}: ${out.slice(0, 40)}`);
+  }
+});
+
+// ---- r3 review R3-2: only allow-listed items may follow a count phrase ----
+
+test("Elliot's 17 count-phrase variants (and the long one) mask the whole value", () => {
+  const SH = "FAKEpw";
+  const variants = {
+    digit_first_eq: `max_tokens=9${SH}`,
+    digit_first_json: `{"max_tokens":"9${SH}"}`,
+    digit_first_colon: `max_tokens: 9${SH}`,
+    null_prefix: `max_tokens: null${SH}`,
+    newline_sep: `max_tokens\n${SH}`,
+    crlf: `max_tokens\r\n${SH}`,
+    fullwidth_colon: `max_tokens\uff1a${SH}`,
+    many_spaces_before_colon: `max_tokens          : ${SH}`,
+    arrow: `max_tokens -> ${SH}`,
+    paren: `max_tokens(${SH})`,
+    slash: `max_tokens/${SH}`,
+    num_tokens_word: `used 12 tokens ${SH}`,
+    num_then_secret: `max_tokens: 1 ${SH}`,
+    inputTokens_word: `inputTokens ${SH}`,
+    prompt_token_count_word: `prompt_token_count ${SH}`,
+    letters_only_long: "max_tokens is FAKEonlylettersValueABCDEFGHIJ",
+    dash_prefix: `access-max_tokens ${SH}`,
+    long_secret: `max_tokens is ${S}`,
+    // a few more of the same shape
+    is_word: `max_tokens is ${SH}`,
+    prose_then_number_then_secret: `max_tokens: 4096 ${SH}`,
+    punct_then_secret: `max_tokens, ${SH}`,
+    number_comma_secret: `max_tokens: 1, ${SH}`,
+    escaped_json: `{\\"max_tokens\\":\\"${SH}\\"}`,
+  };
+  for (const [name, value] of Object.entries(variants)) {
+    const { stdout, persisted } = capture(() => logError("upstream failed", { error_message: value }));
+    assert.equal(stdout.error_message, REDACTED, `${name}: ${value}`);
+    assert.equal(persisted.fields.error_message, REDACTED, `${name}: ${value}`);
   }
 });
