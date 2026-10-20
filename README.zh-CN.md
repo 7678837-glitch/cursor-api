@@ -1,10 +1,22 @@
 # cursor-api
 
-**把 Cursor 模型暴露成 OpenAI 兼容接口。** 任意 OpenAI 客户端指向 `/v1`；在管理台签发客户端 Key、查看请求日志。
+[English](README.md) | 简体中文
 
-**English:** [`README.md`](./README.md) · **变更记录：** [`CHANGELOG.md`](./CHANGELOG.md)
+> 本文是英文 README 的中文译本，内容以英文版为准。
+
+**把 Cursor 模型暴露成 OpenAI 兼容接口。** 使用 OpenAI 请求格式的客户端指向 `/v1` 即可接入；在管理台签发客户端 Key、查看请求日志。单元测试覆盖标准 OpenAI 请求格式，以及 Codex、OpenCode 发送的请求形态，但这不是用这些客户端做的端到端测试。仅部分兼容：不支持音频，Chat Completions 对 `temperature` / `top_p` / `seed` 默认返回 400。详见[客户端接入](#客户端接入)。
+
+> **非官方项目。** `cursor-api` 与 Cursor（Anysphere, Inc.）和 OpenAI 均无关联，也未获其认可。文中提到这些名称仅用于说明兼容对象。
+>
+> **服务条款风险：** 使用本网关可能违反 Cursor 的[服务条款](https://cursor.com/terms-of-service)或[可接受使用政策](https://cursor.com/acceptable-use-policy)，可能导致 Cursor 账号被暂停或终止。使用风险由你自行承担。
+>
+> **使用范围：** 只使用你自己的 Cursor API Key（即上游的 `cursor_api_key`，不是网关签发的 `cgk_` 客户端 Key），仅供本机个人使用。不要多人共用你的 Cursor API Key，也不要把网关作为公共服务对外提供。使用时请遵守 Cursor 的条款。
+
+**变更记录：** [`CHANGELOG.md`](./CHANGELOG.md)
 
 **你需要：** [Docker Compose](https://docs.docker.com/compose/) 和 [Cursor User API Key](https://cursor.com/settings)。
+
+> **⚠️ 破坏性变化（下个版本）：默认监听地址改为 `127.0.0.1`。** 未设置 `host` 或 `GATEWAY_HOST` 时，网关只接受本机连接。**受影响：** 不用 Docker（PM2 / systemd / `NODE_ENV=production npm start`）又要从其他机器访问的用户，以及不使用本仓库 `Dockerfile` 的自制容器镜像。官方镜像和 compose 文件在容器内仍监听 `0.0.0.0`。要重新监听所有网卡，设置 `host = "0.0.0.0"` 或 `GATEWAY_HOST=0.0.0.0`。**风险：** 这会把网关（以及背后的 Cursor 账号）暴露给主机能连到的所有网络，只应在防火墙或反向代理之后这样做。详见 [升级说明：监听地址](#升级说明监听地址)。
 
 ## 四步部署
 
@@ -73,7 +85,7 @@ docker compose up -d
 编辑容器生成的 `./data/config/gateway.toml`。
 
 ```toml
-host = "0.0.0.0"
+# host = "0.0.0.0"  # 不写 = 镜像默认 0.0.0.0；写了以这里为准（环境变量 GATEWAY_HOST 优先于两者）
 port = 8787
 
 cursor_api_key = "你的-cursor-user-api-key"
@@ -98,6 +110,8 @@ detailed = false
 | `[logs].detailed_max_bytes` | 单条请求/响应 JSON 上限（4KiB–1MiB，默认 64KiB） |
 | `[logs].max_detail_bytes` | `model` + 详细正文合计 UTF-8 字节上限（默认 256MiB），超限先删最旧行 |
 | `park_timeout_ms` | 工具轮次在内存里保留多久（默认 **300000**）。网关重启后，下一次工具结果按 HTTP transcript 续场 |
+| `auth_failure_limit` | 每个客户端地址在任意 60 秒滑动窗口内允许的认证失败次数（默认 **20**，最大 1000；`0` 关闭）。管理密钥和客户端 Key 分开计数。**管理端：**达到上限后，该地址的所有管理请求（包括正确密钥）都返回 `429` 和 `Retry-After`，直到窗口内的失败数回落。**客户端 Key：**正确的 Key 永远不会被限流，只有继续使用错误 Key 的请求会返回 `429` + `Retry-After`（代替 `401`）。不带任何 Key 的请求不计数。IPv6 按 /64 合并计数 |
+| `trusted_proxies` | 反向代理的 IP 或 CIDR，逗号分隔，例如 `"127.0.0.1, 172.18.0.0/16"`（环境变量 `TRUSTED_PROXIES`）。默认为空：TCP 对端地址即客户端地址，忽略 `X-Forwarded-For`。对端在列表中时，取 `X-Forwarded-For` 从右往左第一个不在列表中的地址。在反代后面却不配置此项时，所有客户端在 `auth_failure_limit` 中共用代理地址。只填写会覆盖或追加 `X-Forwarded-For` 的代理（nginx `proxy_add_x_forwarded_for`、Caddy 默认行为） |
 
 ```bash
 chmod 600 data/config/gateway.toml
@@ -160,7 +174,7 @@ Cursor SDK 每轮接收的是单个 prompt，并不原生接收 OpenAI 角色消
 
 ### Codex（`POST /v1/responses`）
 
-把 Codex 指到本网关的 `/v1`。压缩（`/compact`）可用：Responses 接受 `parallel_tool_calls: false` 和 `tools: []`（该开关会被忽略，Cursor 不区分）。Chat Completions 对 `parallel_tool_calls: false` 仍 400。
+把 Codex 指到本网关的 `/v1`。压缩（`/compact`）请求可被接受：Responses 接受 `parallel_tool_calls: false` 和 `tools: []`（该开关会被忽略，Cursor 不区分）。Chat Completions 对 `parallel_tool_calls: false` 仍 400。
 
 Responses 还会收下并忽略采样参数（`temperature`、`top_p` 等）以及未知顶层字段（`client_metadata`、`include` 等）。Codex 的 `custom` 工具（`apply_patch`）往返发 `custom_tool_call` 和自由格式 `input`。嵌套 `namespace` 工具摊平成 function。没有 name 的 hosted 工具（`web_search` 等）直接丢掉。上一轮的 assistant 正文和 `function_call` 会并成一条消息，避免工具结果 400。`previous_response_id` 续同一个 Cursor Agent。
 
@@ -211,7 +225,37 @@ print(client.chat.completions.create(
 
 **优先级：** 环境变量 → `.env` → TOML → 默认值。
 
+**监听地址**（优先级从高到低）：
+
+1. 环境变量 `GATEWAY_HOST`（`docker run -e`、compose `environment:`、PM2 `env`、systemd `Environment=`、`.env`）
+2. `gateway.toml` 里的 `host`
+3. `GATEWAY_DEFAULT_HOST`——Docker 镜像把它设为 `0.0.0.0`，让映射端口开箱可用；不需要手动设置
+4. `127.0.0.1`（仅本机）
+
+也就是说：在 Docker 里，除非 `gateway.toml` 另有设置，容器监听 `0.0.0.0`；不用 Docker 时监听 `127.0.0.1`。如果 `GATEWAY_HOST` 覆盖了 `gateway.toml` 里不同的 `host`，启动时会打一条 `warn` 日志。端口映射的宿主机一侧请保持回环（`127.0.0.1:8787:8787`），除非确实要对外暴露，不要去掉 `127.0.0.1:` 前缀。
+
 SQLite 与工作区在 `./data`。请求日志和系统日志按 `[logs]` 在写入时和启动时自动清理。容器 stdout 由 compose 的 `logging.options` 轮转（约 30 MB 上限）。
+
+---
+
+## 升级说明：监听地址
+
+**破坏性变化——非 Docker 部署默认只监听 `127.0.0.1`。**
+
+- **变化：** `gateway.toml` 没有 `host`、也没有 `GATEWAY_HOST` 时，网关现在监听 `127.0.0.1`。旧版本在 `NODE_ENV=production` 下监听 `0.0.0.0`。
+- **受影响（远程访问会断）：**
+  - 不用 Docker、以 `NODE_ENV=production` 运行（PM2、systemd 等）并从其他机器访问，且 `gateway.toml` 里没有 `host`、也没有设置 `GATEWAY_HOST` 的部署；
+  - 不用本仓库 `Dockerfile`、自己用镜像或 entrypoint 跑 `node dist/index.js` 的容器（拿不到 `GATEWAY_DEFAULT_HOST=0.0.0.0`），映射端口会不通。
+- **现象：** 升级后在服务器本机 `curl http://127.0.0.1:8787/health` 正常，其他机器连不上（connection refused）。
+- **自查：** `ss -ltnp | grep 8787`，看到 `127.0.0.1:8787` 就说明受影响。
+- **恢复监听所有网卡**，改完重启：
+  - `gateway.toml`：加上 `host = "0.0.0.0"`；或者
+  - PM2：在 ecosystem 文件里写 `env: { GATEWAY_HOST: "0.0.0.0" }`，然后 `pm2 restart <app> --update-env`；或者
+  - systemd：在 unit（或 drop-in）里写 `Environment=GATEWAY_HOST=0.0.0.0`，然后 `systemctl daemon-reload && systemctl restart <unit>`。
+  - 自制镜像：`ENV GATEWAY_DEFAULT_HOST=0.0.0.0`（`gateway.toml` 的 `host` 仍然说了算）或 `-e GATEWAY_HOST=0.0.0.0`。
+- **风险：** `0.0.0.0` 会把网关（以及背后的 Cursor 账号）暴露给主机所在的所有网络。请放在防火墙或反向代理之后，使用强 `admin_access_key` 和客户端 Key；除非确实要对外发布，Docker 端口映射保持 `127.0.0.1:` 前缀。Docker 的 `-p` 规则会绕过 ufw。
+- **不受影响：** 官方镜像和仓库自带的 compose 文件（容器内仍监听 `0.0.0.0`，宿主机一侧端口仍是 `127.0.0.1:8787`）；配置里已经有 `host = "0.0.0.0"` 的用户（包括旧版本自动生成的配置）。
+- **Docker 说明：** 镜像现在设置的是 `GATEWAY_DEFAULT_HOST=0.0.0.0`，不再是 `GATEWAY_HOST`，所以挂载的 `gateway.toml` 里写的 `host` 在容器内会生效。
 
 ---
 
@@ -247,4 +291,4 @@ GIT_COMMIT=$(git rev-parse HEAD) docker compose build
 
 ## 许可证
 
-MIT — 见 [`package.json`](./package.json)。
+[MIT](./LICENSE)。MIT 许可只覆盖本仓库的代码。第三方依赖适用各自的许可；其中 `@cursor/sdk` 及其平台包（如 `@cursor/sdk-linux-x64`）是专有许可（© Anysphere Inc.，保留所有权利），并会被打包进发布的 Docker 镜像。

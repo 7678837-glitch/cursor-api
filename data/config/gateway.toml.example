@@ -1,7 +1,10 @@
 # Copy to gateway.toml, fill values, then: chmod 600 gateway.toml
 # Do not commit gateway.toml with real secrets.
 
-host = "0.0.0.0"
+# Listen address. Priority: GATEWAY_HOST env > this `host` > GATEWAY_DEFAULT_HOST env > 127.0.0.1.
+# Unset: Docker image listens on 0.0.0.0 (it sets GATEWAY_DEFAULT_HOST); without Docker, 127.0.0.1 only.
+# Set "0.0.0.0" for LAN access outside Docker (behind a firewall), or "127.0.0.1" to keep a container local-only.
+# host = "127.0.0.1"
 port = 8787
 
 cursor_api_key = ""
@@ -11,6 +14,8 @@ api_key_pepper = ""
 # data_dir = "data"
 # cursor_workspace = "data/workspace"
 # park_timeout_ms = 300000
+# auth_failure_limit = 20
+# trusted_proxies = "127.0.0.1"   # reverse proxies whose X-Forwarded-For is trusted; empty = none
 
 [logs]
 # Request log retention in SQLite (admin UI). Oldest rows are deleted first.
@@ -23,4 +28,4 @@ detailed = false
 # max_detail_bytes = 268435456
 
 # Docker (NODE_ENV=production): missing gateway.toml is auto-created empty on first start.
-# Local npm dev defaults to 127.0.0.1:8787 when host/port are omitted.
+# Without host/port: 127.0.0.1:8787 (Docker image: 0.0.0.0:8787 via GATEWAY_DEFAULT_HOST).

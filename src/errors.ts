@@ -2,6 +2,8 @@ export class GatewayError extends Error {
   readonly httpStatus: number;
   readonly code: string;
   readonly openaiType: string;
+  /** Seconds for a `Retry-After` header (429 responses). */
+  retryAfterSeconds?: number;
 
   constructor(httpStatus: number, code: string, message: string, openaiType: string) {
     super(message);
@@ -9,6 +11,13 @@ export class GatewayError extends Error {
     this.httpStatus = httpStatus;
     this.code = code;
     this.openaiType = openaiType;
+  }
+
+  /** `Retry-After` header for errors that carry `retryAfterSeconds` (429 responses). */
+  static retryAfterHeaders(error: unknown): Record<string, string> {
+    return error instanceof GatewayError && error.retryAfterSeconds !== undefined
+      ? { "retry-after": String(error.retryAfterSeconds) }
+      : {};
   }
 }
 
