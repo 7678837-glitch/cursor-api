@@ -28,6 +28,10 @@ Version numbers use **`YYYYMMDD.N`** (date + same-day increment). The single sou
 - Listen address priority is now `GATEWAY_HOST` → `gateway.toml` `host` → `GATEWAY_DEFAULT_HOST` → `127.0.0.1`. The Docker image sets `GATEWAY_DEFAULT_HOST=0.0.0.0` (not `GATEWAY_HOST`), so a `host` in a mounted `gateway.toml` is honoured inside the container. A warning is logged when `GATEWAY_HOST` overrides a different `host` from `gateway.toml`.
 - The auto-created `gateway.toml` and `gateway.toml.example` no longer pin `host = "0.0.0.0"`; the line is commented out.
 
+### Changed
+
+- **Log redaction (stdout/stderr and the admin system log).** Now readable: token counts (`input_tokens`, `output_tokens`, `max_tokens`, `inputTokens`, `*_token_count`), credential identifiers (`api_key_id`, `key_prefix`), and error text that only mentions token counts (`max_tokens must be …`). Still masked: any field whose name contains `token`, `secret`, `password`, `api_key`, `authorization`, `cookie`, `pepper`, `credential` (camelCase included, e.g. `accessToken`, `WorkosCursorSessionToken`), whatever the value type; string values that still mention one of those words after masking. New: the log message is scrubbed too — `Bearer …`, `Basic <base64>`, `cgk_…`, `sk-…`, Cursor session tokens (`user_…::…`), `Authorization: <scheme> …` and `name=value` / `"name":"value"` forms such as `access_token=`, `client_secret:` or `password=` are masked in place.
+
 ---
 
 ## [20261016.1] — 2026-10-16
