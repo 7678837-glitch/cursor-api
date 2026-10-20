@@ -5,6 +5,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { logError, logInfo, sanitizeFields, scrubSecrets, setSystemLogWriter } from "../dist/log.js";
 import { parseChatCompletionsRequest } from "../dist/openai.js";
+import { runFailureError } from "../dist/cursor.js";
 import { CLIENT_KEY, startFakeGateway } from "./fixtures/gateway-harness.mjs";
 
 const S = "FAKEs3cr3tVALUE9x";
@@ -294,13 +295,20 @@ test("scrubSecrets handles 16 MiB secret-shaped runs without RangeError and mask
     bearer_run: `Bearer ${"a".repeat(n)}`,
     basic_run: `Basic ${"A".repeat(n)}`,
   };
+  const expected = {
+    key_dash: `ok ${REDACTED}`,
+    long_cgk: `ok ${REDACTED}`,
+    sk_run: `ok ${REDACTED}`,
+    bearer_run: `ok Bearer ${REDACTED}`,
+    basic_run: `ok Basic ${REDACTED}`,
+  };
   for (const [name, text] of Object.entries(shapes)) {
     let out;
     assert.doesNotThrow(() => {
-      out = scrubSecrets(text);
+      out = scrubSecrets(`ok ${text}`);
     }, name);
-    assert.ok(out.length < 64, `${name}: ${out.length} chars left`);
-    assert.ok(out.endsWith(REDACTED), `${name}: ${out.slice(0, 40)}`);
+    // Exact output: the rule itself masked the run (the fail-closed "[redacted]" would drop "ok").
+    assert.equal(out, expected[name], `${name}: ${out.slice(0, 40)}`);
   }
 });
 
@@ -373,4 +381,28 @@ test("cookie and credential in a field value mask the whole value", () => {
     assert.equal(stdout.detail, REDACTED, value);
     assert.equal(persisted.fields.detail, REDACTED, value);
   }
+});
+
+// Defences that the R3-2 allow-list made redundant for the older cases, pinned on their own.
+test("a count phrase does not excuse a secret-like run, a credential-ish compound name or a glued value", () => {
+  for (const value of [
+    `max_tokens must be ${S}`, // allow-listed prose, but a 16+ letter-and-digit run follows
+    `max_tokens exceeds limit of ${S}`,
+    "refresh_cached_tokens: 12345678", // `cached_tokens` inside a longer name is not a count phrase
+    "device_max_tokens=12345678",
+    "token: 12345678", // singular `token` is never a count phrase
+    '{"token":12345678}',
+    "tokens 12345678",
+    `max_tokens: ${"1".repeat(30)}`, // a 25+ digit run is not a count
+    "max_tokens: null12345678", // a value glued to `null` is not `null`
+  ]) {
+    assert.equal(sanitizeFields({ detail: value }).detail, REDACTED, value);
+  }
+});
+
+test("cursor run failed: the keyword check runs before upstream_message is cut to 300 characters", () => {
+  const value = `${S} ${"x ".repeat(200)}password`; // the only credential word is past character 300
+  const { stdout, persisted } = capture(() => runFailureError({ message: value, code: "internal" }));
+  assert.equal(stdout.upstream_message, REDACTED);
+  assert.equal(persisted.fields.upstream_message, REDACTED);
 });
