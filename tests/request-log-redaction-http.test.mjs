@@ -117,3 +117,20 @@ test("request_logs: the error snapshot written with detailed logging off is reda
     await gateway.stop();
   }
 });
+
+test("request_logs: an error_message echoing a credential word with a secret is masked whole (R3-3 shape)", { timeout: 30_000 }, async () => {
+  const SECRET = "FAKEzzSECRETqq1";
+  const gateway = await startFakeGateway({ LOG_DETAILED: "false" });
+  try {
+    // `Unknown field '<name>'`: in-place masking alone would keep the secret after `Bearer [redacted]`.
+    const res = await post(gateway, "/v1/chat/completions", { model: "fake-model", messages: [{ role: "user", content: "hi" }], [`Bearer token_abcdefgh ${SECRET}`]: 1 });
+    assert.equal(res.status, 400);
+    const { listText, details } = await storedRows(gateway);
+    assert.equal(details.length, 1);
+    assert.ok(!listText.includes(SECRET), listText);
+    assert.ok(!String(details[0].response_detail).includes(SECRET), details[0].response_detail);
+    assert.equal(JSON.parse(details[0].response_detail).error_message, "[redacted]");
+  } finally {
+    await gateway.stop();
+  }
+});

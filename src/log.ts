@@ -478,6 +478,10 @@ function isMaskedField(kind: KeyClass, value: unknown): boolean {
   }
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
 /** Nested objects deeper than this are replaced rather than walked (system log / stored bodies). */
 const MAX_LOG_FIELD_DEPTH = 8;
 const MAX_BODY_DEPTH = 64;
@@ -540,7 +544,15 @@ export function redactStoredText(text: string): string {
   const trimmed = text.trimStart();
   if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
     try {
-      return JSON.stringify(redactValue(JSON.parse(text) as unknown));
+      const parsed = JSON.parse(text) as unknown;
+      const safe = redactValue(parsed);
+      // A top-level `error_message` (response_detail) is error text, often from upstream: it gets
+      // the raw-text check of redactLogText, not in-place masking only (r3 review R3-3 shape:
+      // `Bearer token_abc <secret>`, `password <secret>`).
+      if (isRecord(parsed) && isRecord(safe) && typeof parsed.error_message === "string") {
+        safe.error_message = redactLogText(parsed.error_message);
+      }
+      return JSON.stringify(safe);
     } catch {
       // Not valid JSON (for example truncated); fall through to text scrubbing.
     }

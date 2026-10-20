@@ -35,7 +35,7 @@ import {
   newAnthropicMessageId,
   parseAnthropicMessagesRequest,
 } from "./anthropic.js";
-import { logError, logInfo, redactValue, setSystemLogWriter, truncateUtf8 } from "./log.js";
+import { logError, logInfo, redactLogText, redactValue, setSystemLogWriter, truncateUtf8 } from "./log.js";
 import {
   encodeNonStreamCompletion,
   encodeStreamChunk,
@@ -1008,7 +1008,7 @@ function snapshotResponseDetail(
   return stringifyRedacted({
     status: "error",
     error_code: errorCode,
-    ...(errorMessage ? { error_message: errorMessage } : {}),
+    ...(errorMessage ? { error_message: redactLogText(errorMessage) } : {}),
   });
 }
 
@@ -1025,7 +1025,7 @@ function buildResponseDetail(
     finish_reason: result?.finish_reason ?? null,
     tool_calls: result?.tool_calls?.map((call) => call.name) ?? null,
     error_code: errorCode,
-    ...(errorMessage ? { error_message: errorMessage } : {}),
+    ...(errorMessage ? { error_message: redactLogText(errorMessage) } : {}),
   });
 }
 

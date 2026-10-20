@@ -321,3 +321,50 @@ test("request_logs redaction stays within a linear time bound from 1 KiB to 1 Mi
     db.close();
   }
 });
+
+// ---- after rebasing onto #39 r4 (caff3a8) ----
+
+test("response_detail error_message gets the raw-text check, not in-place masking only (R3-3 shape)", async () => {
+  const SECRET = "FAKEzzSECRETqq1";
+  for (const message of [`Bearer token_abcdefgh ${SECRET}`, `password ${SECRET}`, `usage limit: api key is ${SECRET}`]) {
+    const row = await storedRow({
+      response_detail: JSON.stringify({ status: "error", text: "see the token docs", error_message: message }),
+    });
+    const detail = JSON.parse(row.response_detail);
+    assert.equal(detail.error_message, "[redacted]", message);
+    assert.ok(!row.response_detail.includes(SECRET), row.response_detail);
+    // Body text keeps in-place masking only: a prompt/answer that mentions a credential word stays readable.
+    assert.equal(detail.text, "see the token docs");
+  }
+  for (const readable of ["The model 'fake-model' does not exist", "max_tokens must be a positive integer"]) {
+    const row = await storedRow({ response_detail: JSON.stringify({ status: "error", error_message: readable }) });
+    assert.equal(JSON.parse(row.response_detail).error_message, readable);
+  }
+});
+
+test("plural count values stay readable in JSON text; anything glued to the number is masked", async () => {
+  const readable = '{"max_tokens":4096} {"max_tokens":null} max_tokens=-1 is too small; tokens=1.5';
+  const row = await storedRow({ request_detail: JSON.stringify({ messages: [{ role: "user", content: readable }] }) });
+  assert.equal(JSON.parse(row.request_detail).messages[0].content, readable);
+  for (const leaky of ["tokens=4096}FAKEzzSECRETqq1", "tokens=4096-FAKEzzSECRETqq1", "refresh_tokens: 12FAKEzzSECRETqq1"]) {
+    const masked = await storedRow({ request_detail: JSON.stringify({ messages: [{ role: "user", content: leaky }] }) });
+    assert.ok(!masked.request_detail.includes("FAKEzz"), masked.request_detail);
+  }
+});
+
+test("8 MiB runs of the new shapes in a stored body do not hit the fail-closed path (no RangeError)", async () => {
+  const { redactValue } = await import("../dist/log.js");
+  const N = 8 * 1024 * 1024;
+  const cases = [
+    [`ghp_${"a".repeat(N)} TAIL`, "[redacted] TAIL"],
+    [`Bearer ${"a".repeat(N)} TAIL`, "Bearer [redacted] TAIL"],
+    [`Basic ${"a".repeat(N)}1 TAIL`, "Basic [redacted] TAIL"],
+    [`github_pat_${"a".repeat(N)} TAIL`, "[redacted] TAIL"],
+  ];
+  for (const [input, expected] of cases) {
+    assert.equal(redactValue({ content: input }).content, expected, input.slice(0, 12));
+  }
+  // `eyJ` + a long run without dots is not a JWT: kept as is, not failed closed.
+  const notJwt = `eyJ${"a".repeat(N)} TAIL`;
+  assert.equal(redactValue({ content: notJwt }).content.length, notJwt.length);
+});
