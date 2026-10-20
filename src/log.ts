@@ -93,8 +93,9 @@ const SECRET_RULES: Rule[] = [
   },
   // `Bearer <value>` (any 8+ chars) and `Basic <base64>` (needs base64 shape, so prose like
   // "Basic authentication" stays readable).
-  // Minimum lengths are written `X{n}X*`, not `X{n,}`: V8 keeps a backtrack entry per character for
-  // `{n,}` and throws RangeError on multi-MB runs, while a plain `*` loop does not (r3 review R3-4).
+  // Minimum lengths are written `X{n}X*`, not `X{n,}`: on Node 22 these `{n,}` loops threw
+  // RangeError (regex stack) on 8 MiB runs, the `X{n}X*` form handles 32 MiB (r3 review R3-4).
+  // scrubSecrets also fails closed if the engine still throws.
   {
     pattern: /\b(Bearer)(\s+)(?!\[redacted\])[A-Za-z0-9._~+/=-]{8}[A-Za-z0-9._~+/=-]*/gi,
     replace: (_match, scheme, space) => `${scheme}${space}${REDACTED}`,
