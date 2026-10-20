@@ -259,3 +259,25 @@ test("long values are capped before redaction and a secret at the cut does not s
   assert.ok(!/abcd/.test(out), out.slice(-40));
   assert.ok(out.endsWith("…[truncated]"));
 });
+
+// ---- r3 review R3-1: a credential word past the 16 KiB cut still masks the whole value ----
+
+test("a credential word after the truncation point still masks the whole value", () => {
+  const pad = (n) => "lorem ".repeat(Math.ceil(n / 6)).slice(0, n);
+  const big = pad(16_400);
+  for (const value of [
+    `${S} ${big} password`,
+    `user FAKEpw ${big} is the password`,
+    `${S} ${big} api_key`,
+    `${S} ${big} max_tokens`, // no count-phrase excuse once the value is cut
+  ]) {
+    assert.ok(value.length > 16_384);
+    const { stdout, persisted } = capture(() => logInfo("m", { detail: value, error_message: value }));
+    for (const out of [stdout.detail, stdout.error_message, persisted.fields.detail, persisted.fields.error_message]) {
+      assert.equal(out, REDACTED, value.slice(-30));
+    }
+  }
+  // A long value with no credential word anywhere is still only truncated, not masked.
+  const plain = sanitizeFields({ detail: `${big} done` }).detail;
+  assert.ok(plain.endsWith("…[truncated]") && plain.startsWith("lorem"), plain.slice(0, 20));
+});

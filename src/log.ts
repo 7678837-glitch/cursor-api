@@ -222,6 +222,10 @@ function hasSecretLikeRun(text: string): boolean {
  * secret shape next to it (`Bearer token_abc S`) and leave the real secret behind.
  */
 function sanitizeString(value: string): string {
+  // A cut value is checked on the full original as well: a credential word past the cut must still
+  // mask the whole value (the secret may sit in the part that is kept). VALUE_KEYWORDS is a plain
+  // alternation of literals, so this stays linear. No count-phrase excuse applies to a cut value.
+  if (value.length > MAX_LOG_STRING_CHARS && VALUE_KEYWORDS.test(value)) return REDACTED;
   const capped = capLogString(value);
   if (VALUE_KEYWORDS.test(capped)) {
     const blanked = withoutCountPhrases(capped);
